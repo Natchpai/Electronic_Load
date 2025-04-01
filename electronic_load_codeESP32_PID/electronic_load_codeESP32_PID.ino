@@ -54,11 +54,11 @@ float To = 298;
 float R25 = 10000;
 int8_t adj_temp = 0;
 float CurrentTemp;
-int FanTrig_TempUpper = 50;
+int FanTrig_TempUpper = 45;
 int FanTrig_TempLower = 35;
 bool FanTrig = false;
 bool AutoFanMode = true;
-int Temp_Max = 100;
+int Temp_Max = 90;
 
 // Parameter
 bool onLoad = false;
@@ -112,7 +112,7 @@ double Setpoint, Input, Output;
 // Don't touch Kd, it will be osscilate
 double consKp=0.0, consKi=450, consKd=0.0;
 
-double gainMax = 999.00;
+double gainMax = 800.00;
 double gainmin = 0.00;
 
 PID calPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, DIRECT);
@@ -1431,7 +1431,7 @@ void menu5_setting() {
           }
           lcd.setCursor(7, 1); 
           lcd.print(char(223));
-          lcd.setCursor(8, 0);
+          lcd.setCursor(8, 1);
           lcd.print("C");
           break;
       }
