@@ -24,4 +24,4 @@ ESP32 generating a PWM signal to controls the Gate-Source Voltage of MOSFET to d
 <img height="700" alt="sch1" src="https://github.com/Natchpai/Electronic_Load/blob/main/Electronic_Load_sch_color_page-0001.jpg" />
 <img height="700" alt="sch2" src="https://github.com/Natchpai/Electronic_Load/blob/main/Electronic_Load_sch_color_page-0002.jpg" />
 
-<img height="400" alt="Picture2" src="https://github.com/Natchpai/Electronic_Load/blob/main/IMG_8594-2.JPG" />
+<img height="400" alt="Picture2" src="https://github.com/Natchpai/Electronic_Load/blob/main/IMG_8594-2.JPG" /><img height="300" alt="sch2" src="https://github.com/Natchpai/Electronic_Load/blob/main/PICTURE/DISPLAY%20LABEL%20-%20Const%20I.png" />
