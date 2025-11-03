@@ -8,7 +8,7 @@ ESP32 generating a PWM signal to controls the Gate-Source Voltage of MOSFET to d
 <img height="500" alt="Picture1" src="https://github.com/Natchpai/Electronic_Load/blob/main/IMG_8593.JPG" /> 
 
 ## Features
-- Constant Current
+- Constant Current: Max 30A. *(I've only tested at 20A@12V. It works)*
 - Constant Power
 - Constant Resistance
 - Digital Voltmeter(Add-on)
