@@ -27,6 +27,8 @@
 #define updateSensor_time 500
 #define updateVoltage_time 250
 
+#define VIN_MIN 1.0
+
 uint8_t sec = 0;
 uint8_t minut = 0;
 int timeMax = 30;
@@ -541,15 +543,23 @@ void readSensor() {
     Resistance = V_sense_select / I_sense;
   } else { Resistance = 1000000.0;}
   
+
+  if(menu == 1 && V_sense_select >= VIN_MIN) {
+    Iset_forCal  = Iset;
+  }
   // if activate = 0 : PWM duty = 0
-  if(menu == 2 && V_sense_select >= 1.0) {// Protection
+  else if(menu == 2 && V_sense_select >= VIN_MIN) {// Protection
     Iset_forCal  = Pset / V_sense_select;
   }
-  else if(menu == 3 && Rset > 0.0) {// devide by zero
+  else if(menu == 3 && Rset > 0.01) {// devide by zero
     Iset_forCal  = V_sense_select / Rset;
   }
+  
   // Protection
   // if(Iset_forCal  > Iin_maximum) Iset_forCal = 1.0;
+  if(V_sense_select < VIN_MIN) {
+    Iset_forCal = 0;
+  }
 
 }
 
