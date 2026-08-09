@@ -1,8 +1,9 @@
-#include <ADS1X15.h>
-#include <LiquidCrystal_I2C.h>
-#include <BfButton.h>
 #include <math.h>
-#include <PID_v1.h>
+
+#include "ADS1X15.h"
+#include "LiquidCrystal_I2C.h"
+#include "BfButton.h"
+#include "PID_v1.h"
 // ADC INPUT
 // Move to 16Bits ADC I2C bus at: 0x48
 #define temp_sense_pin 34
@@ -542,8 +543,6 @@ void readSensor() {
     Resistance = V_sense_select / I_sense;
   } else { Resistance = 1000000.0;}
   
-
-
   // if activate = 0 : PWM duty = 0
   if(menu == 2 && V_sense_select >= 0.1) {// Protection
     Iset_forCal  = Pset / V_sense_select;
