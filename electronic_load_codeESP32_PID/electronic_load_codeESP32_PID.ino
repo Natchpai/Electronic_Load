@@ -542,7 +542,7 @@ void readSensor() {
   } else { Resistance = 1000000.0;}
   
   // if activate = 0 : PWM duty = 0
-  if(menu == 2 && V_sense_select >= 0.1) {// Protection
+  if(menu == 2 && V_sense_select >= 1.0) {// Protection
     Iset_forCal  = Pset / V_sense_select;
   }
   else if(menu == 3 && Rset > 0.0) {// devide by zero
