@@ -521,8 +521,6 @@ void readSensor() {
   V0_ADC = ADS.readADC(1);  
   V1_ADC = ADS.readADC(2);  
 
-  Iset_forCal  = Iset;
-
   if (ADS.getError() == ADS1X15_OK)
   { 
 
