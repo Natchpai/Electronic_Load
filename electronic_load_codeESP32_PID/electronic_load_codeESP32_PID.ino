@@ -27,7 +27,7 @@
 #define updateSensor_time 500
 #define updateVoltage_time 250
 
-#define VIN_MIN 1.0
+#define VIN_MIN 0.1
 
 uint8_t sec = 0;
 uint8_t minut = 0;
@@ -80,7 +80,7 @@ double Pmin = 00.00;
 double Pset = 0.00;
 
 double RMax = 9999.9999;
-double Rmin = 50.00;
+double Rmin = 0.2;
 double Rset = 50.00;
 
 bool V_sense_number = 0; // Default at Input terminal
@@ -113,7 +113,7 @@ double Setpoint, Input, Output;
 
 //Define the aggressive and conservative Tuning Parameters
 // Don't touch Kd, it will be osscilate
-double consKp=0.0, consKi=450, consKd=0.0;
+double consKp=0.0, consKi=400, consKd=0.0;
 
 double gainMax = 800.00;
 double gainmin = 0.00;
@@ -558,7 +558,7 @@ void readSensor() {
   // Protection
   // if(Iset_forCal  > Iin_maximum) Iset_forCal = 1.0;
   if(V_sense_select < VIN_MIN) {
-    Iset_forCal = 0;
+    Iset_forCal = 0; onLoad = 0;
   }
 
 }
@@ -1674,6 +1674,8 @@ void setDuty_PID() {
 
   ledcWrite(PWM_pinOut, dutyCycle);
 
+  Serial.print("I:");
+  Serial.println(I_sense);
 }
 
 uint32_t updateFan_time;
@@ -1786,12 +1788,11 @@ void loop() {
   
   setDuty_PID();
 
-  Serial.print("duty:");
-  Serial.print(dutyCycle*0.00152);
-  Serial.print(",");
+  // Serial.print("duty:");
+  // Serial.print(dutyCycle*0.00152);
+  // Serial.print(",");
 
-  Serial.print("I:");
-  Serial.println(I_sense);
+  
 
 
   // update sensor every 0.5 secconds
