@@ -112,9 +112,10 @@ double Setpoint, Input, Output;
 
 //Define the aggressive and conservative Tuning Parameters
 // Don't touch Kd, it will be osscilate
-double consKp=0.0, consKi=10.0, consKd=0.0;
+double consKp=0.2, consKi=10.0, consKd=0.0;
 
-double gainMax = 800.00;
+double gainMaxKpKd = 0.80;
+double gainMaxKi = 15.00;
 double gainmin = 0.00;
 
 PID calPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, DIRECT);
@@ -158,7 +159,7 @@ const char *FanList[2] = {
 
 const char *PIDList[3]= {
   "Kp : ",
-  "Ki : ",
+  "Ki :",
   "Kd : "
 };
 
@@ -496,9 +497,9 @@ void count(bool state = true) { // state is true : countup
     }
 
     else if(menu == 7) {
-      if(menu_pid == 1) count_trig_float(&consKp, &digit_2, &gainMax, &gainmin, state);
-      else if(menu_pid == 2) count_trig_float(&consKi, &digit_3, &gainMax, &gainmin, state);
-      else if(menu_pid == 3) count_trig_float(&consKd, &digit_2, &gainMax, &gainmin, state);
+      if(menu_pid == 1) count_trig_float(&consKp, &digit_2, &gainMaxKpKd, &gainmin, state);
+      else if(menu_pid == 2) count_trig_float(&consKi, &digit_3, &gainMaxKi, &gainmin, state);
+      else if(menu_pid == 3) count_trig_float(&consKd, &digit_2, &gainMaxKpKd, &gainmin, state);
 
     }
 
