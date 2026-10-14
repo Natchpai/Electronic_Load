@@ -10,7 +10,7 @@
 extern float CurrentTemp;
 extern int menu;
 extern uint8_t mode;
-extern uint32_t lastUpdateTempSensor;
+extern uint32_t lastDisplayTempSensor;
 extern uint32_t LastupdateSensor;
 extern double V_sense_select;
 extern double I_sense;
@@ -56,6 +56,7 @@ extern double capacityCurrentA;
 extern double capacityCutoffV;
 extern uint8_t capacityEditField;
 extern bool temperatureValid;
+extern int lastTempRaw;
 extern bool capacityStartReady;
 
 void readVoltageAll();
@@ -79,6 +80,14 @@ void writeCapacityRow(uint8_t row, const char *text) {
 }
 
 void updateTempSensor() {
+  if(!temperatureValid) {
+    char status[6];
+    snprintf(status, sizeof(status), "E%04d", lastTempRaw);
+    lcd.setCursor(15, 0);
+    lcd.print(status);
+    return;
+  }
+
   // Temperature is sampled by the main scheduler; this function only paints it.
   if((int)CurrentTemp <= 99) {
     lcd.setCursor(15, 0);
@@ -101,8 +110,8 @@ void updateTempSensor() {
 
 void updateSensor() {
   if( (menu == 1 ||  menu == 2 || menu == 3) && mode != 0 ) {
-    if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-      lastUpdateTempSensor = millis();
+    if(millis() - lastDisplayTempSensor >= updateTemp_time) {
+      lastDisplayTempSensor = millis();
       updateTempSensor();
     }
 
@@ -526,8 +535,8 @@ void menu2_constPower() {
         drawSetValue_RunMode(Pset, "W");
       }
 
-      if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-        lastUpdateTempSensor = millis();
+      if(millis() - lastDisplayTempSensor >= updateTemp_time) {
+        lastDisplayTempSensor = millis();
         updateTempSensor();
       }
       break;
@@ -600,8 +609,8 @@ void menu3_constResistance() {
         drawSetValue_RunMode(Rset, ohmUnit);
       }
 
-      if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-        lastUpdateTempSensor = millis();
+      if(millis() - lastDisplayTempSensor >= updateTemp_time) {
+        lastDisplayTempSensor = millis();
         updateTempSensor();
       }
       break;
