@@ -29,6 +29,7 @@ int TempsetMax = 125;
 int Tempsetmin = 40;
 
 uint32_t lastUpdateTempSensor;
+uint32_t lastDisplayTempSensor;
 uint32_t lastTime;
 uint32_t LastupdateSensor;
 uint32_t lastPressRedButton;
@@ -50,11 +51,12 @@ int8_t adj_temp = 0;
 float CurrentTemp;
 bool temperatureValid = false;
 uint32_t temperatureUpdatedAt = 0;
+int lastTempRaw = 0;
 bool currentSampleFresh = false;
 bool voltageSampleFresh = false;
 uint32_t lastSerialTelemetry = 0;
-int FanTrig_TempUpper = 45;
-int FanTrig_TempLower = 35;
+int FanTrig_TempUpper = 26;
+int FanTrig_TempLower = 25;
 bool FanTrig = false;
 bool AutoFanMode = true;
 int Temp_Max = 90;
@@ -530,6 +532,7 @@ void rotaryEncode() {
 
 void readTemp() {
   const int raw = analogRead(temp_sense_pin);
+  lastTempRaw = raw;
   if(raw <= 0 || raw >= 4095) {
     return;
   }
@@ -810,7 +813,9 @@ void loop() {
   }
   // Retain the last good reading through brief ADC glitches, then fail safe
   // when no valid temperature has arrived within the configured stale window.
-  if(temperatureValid && now - temperatureUpdatedAt > TEMPERATURE_STALE_TIMEOUT_MS) {
+  const uint32_t temperatureCheckTime = millis();
+  if(temperatureValid &&
+     temperatureCheckTime - temperatureUpdatedAt > TEMPERATURE_STALE_TIMEOUT_MS) {
     temperatureValid = false;
   }
   if(capacityTest.running() && (menu != 4 || mode != 1)) {
