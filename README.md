@@ -2,8 +2,6 @@
 
 Firmware and KiCad design files for a programmable DC electronic load controlled by an ESP32. The firmware measures voltage and current through an external ADC, drives the load through PWM, and provides a local LCD and rotary-encoder interface.
 
-Licensed under the [MIT License](LICENSE).
-
 ## Hardware
 
 <p align="center">
@@ -56,3 +54,7 @@ The firmware emits one numeric CSV row every 50 ms at 115200 baud. Channel 1 is 
 ## Verification and Hardware Notes
 
 The committed firmware clean-compiled and was uploaded to an ESP32-D0WD-V3 on COM3; a USB-only capture after upload received 52 numeric CSV rows at 115200 baud. Default gains are Kp = 0, Ki = 40, and Kd = 0, so the default controller is integral-only. No external input source or load was connected, so ADC calibration, rated operating limits, thermal performance, and controller stability under load are **not verified**. Confirm sensor calibration and power-stage component ratings and cooling before applying power.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
