@@ -1,33 +1,24 @@
 #include <math.h>
 
+#include "ElectronicLoadConfig.h"
+#include "ElectronicLoadUI.h"
+
 #include "ADS1X15.h"
-#include "LiquidCrystal_I2C.h"
 #include "BfButton.h"
 #include "PID_v1.h"
+#include "ElectronicLoadDisplay.h"
+#include "ElectronicLoadSensors.h"
+#include "ElectronicLoadCapacityTest.h"
 // ADC INPUT
 // Move to 16Bits ADC I2C bus at: 0x48
-#define temp_sense_pin 34
 
-#define buzzer_pin 32
 
 // Digital INPUT
-#define red_button_pin 26
-#define yellow_button_pin 25
-#define rotary_button_pin 27
-#define Encoder_DT 13
-#define Encoder_CLK 14
 
 // Digital OUTPUT
-#define PWM_pinOut 4
-#define fanCtrl_pinOut 15
-#define gateCtrl_pinOut 2
 
 // Setting time
-#define updateTemp_time 1000
-#define updateSensor_time 500
-#define updateVoltage_time 250
 
-#define VIN_MIN 0.1
 
 uint8_t sec = 0;
 uint8_t minut = 0;
@@ -57,6 +48,11 @@ float To = 298;
 float R25 = 10000;
 int8_t adj_temp = 0;
 float CurrentTemp;
+bool temperatureValid = false;
+uint32_t temperatureUpdatedAt = 0;
+bool currentSampleFresh = false;
+bool voltageSampleFresh = false;
+uint32_t lastSerialTelemetry = 0;
 int FanTrig_TempUpper = 45;
 int FanTrig_TempLower = 35;
 bool FanTrig = false;
@@ -104,8 +100,9 @@ uint8_t previous_mode = 255;
 uint8_t digit_1 = 1;
 uint8_t digit_2 = 2;
 uint8_t digit_3 = 3;
-int menuItemMax = 6;
+int menuItemMax = 7;
 int menuItemmin = 1;
+int settingItemMax = 6;
 
 
 //Define Variables we'll be connecting to
@@ -113,17 +110,18 @@ double Setpoint, Input, Output;
 
 //Define the aggressive and conservative Tuning Parameters
 // Don't touch Kd, it will be osscilate
-double consKp=0.0, consKi=400, consKd=0.0;
+double consKp=0.0, consKi=40.0, consKd=0.0;
 
 double gainMax = 800.00;
 double gainmin = 0.00;
 
 PID calPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, DIRECT);
 
-String menuList[6] = {
+const char *menuList[7] = {
   "Const Current     ",
   "Const Power       ",
   "Const Resistance  ",
+  "Battery Capacity  ",
   "Digital Voltmeter ",
   "Utility           ",
   "PID Tuner         ",
@@ -136,7 +134,7 @@ int cursorMax = 2;
 int cursormin = 1;
 
 
-String settingList[6]= {
+const char *settingList[6]= {
   "Current Max       ",
   "Volt sense        ",
   "Fan Trig          ",
@@ -145,18 +143,18 @@ String settingList[6]= {
   "                  ",
 };
 
-String onOffList[2] = {
+const char *onOffList[2] = {
   "ON                ",
   "OFF               "
 };
 
-String FanList[2] = {
+const char *FanList[2] = {
   "Auto              ",
   "Manual            "
 };
 
 
-String PIDList[3]= {
+const char *PIDList[3]= {
   "Kp : ",
   "Ki :",
   "Kd : "
@@ -178,12 +176,17 @@ float dutyFactor = 0;
 
 // Analog to Digital Converter
 ADS1115 ADS(0x48);
+ElectronicLoadSensors sensorSampler(ADS);
+ElectronicLoadCapacityTest capacityTest;
+double capacityCurrentA = 1.00;
+double capacityCutoffV = 0.00;
+uint8_t capacityEditField = 0;
+bool capacityStartReady = false;
 int16_t I_ADC ;
 int16_t V0_ADC ;
 int16_t V1_ADC ;
 
-// LiquidCrystal set pin
-LiquidCrystal_I2C lcd(0x27, 20, 4);
+
 
 byte arrow[] = { // arrow >
   B01000,
@@ -213,9 +216,28 @@ BfButton redButton(BfButton::STANDALONE_DIGITAL, red_button_pin, true, LOW);
 BfButton yellowButton(BfButton::STANDALONE_DIGITAL, yellow_button_pin, true, LOW); 
 BfButton rotaryButton(BfButton::STANDALONE_DIGITAL, rotary_button_pin, false, LOW); 
 
+void tryStartCapacityTest();
+void serviceCapacityTest(uint32_t now, bool newCurrentSample, bool newVoltageSample);
+bool sensorsReady(uint32_t now);
+void serviceSensorSampler(uint32_t now);
+
 void pressRed (BfButton *redButton, BfButton::press_pattern_t pattern) {
   switch (pattern) {
     case BfButton::SINGLE_PRESS:
+      if(menu == 4 && mode == 1) {
+        if(capacityTest.running()) {
+          capacityTest.stop(millis());
+          onLoad = false;
+        } else if(capacityTest.state() == ElectronicLoadCapacityTest::COMPLETE ||
+                  capacityTest.state() == ElectronicLoadCapacityTest::STOPPED ||
+                  capacityTest.state() == ElectronicLoadCapacityTest::FAULT) {
+          capacityTest.reset(millis());
+          onLoad = false;
+        } else {
+          tryStartCapacityTest();
+        }
+        break;
+      }
       if(mode == 1) {
         onLoad = !onLoad;
       }
@@ -223,7 +245,7 @@ void pressRed (BfButton *redButton, BfButton::press_pattern_t pattern) {
     case BfButton::DOUBLE_PRESS:
       break;
     case BfButton::LONG_PRESS:
-      if(mode == 1) {
+      if(mode == 1 && menu != 4) {
         onLoad = !onLoad;
         mode = 2;
       }
@@ -235,6 +257,10 @@ void pressYellow (BfButton *yellowButton, BfButton::press_pattern_t pattern) {
   switch (pattern) {
     case BfButton::SINGLE_PRESS:
     // Back to previous
+      if(menu == 4 && capacityTest.running()) {
+        capacityTest.stop(millis());
+        onLoad = false;
+      }
       if(mode != 0) mode = mode - 1;
       if(mode == 0) lcd.clear();
       
@@ -244,9 +270,17 @@ void pressYellow (BfButton *yellowButton, BfButton::press_pattern_t pattern) {
       break;
     case BfButton::LONG_PRESS:
       if(mode == 0) {
+        if(menu == 4 && capacityTest.running()) {
+          capacityTest.stop(millis());
+          onLoad = false;
+        }
         mode = 1;
       }
       else if(mode == 1) {
+        if(menu == 4 && capacityTest.running()) {
+          capacityTest.stop(millis());
+          onLoad = false;
+        }
         mode = 2;
       } 
       break;
@@ -285,6 +319,9 @@ void pressRotary (BfButton *rotaryButton, BfButton::press_pattern_t pattern) {
             select_digit = 0;
           }
           break;
+        case 4:
+          capacityEditField = (capacityEditField + 1) % 2;
+          break;
         }
       }
 
@@ -302,6 +339,7 @@ void printBegin() {
   lcd.print("DC Electronic Loads");
   lcd.setCursor(8, 3);
   lcd.print("2025");
+  lcd.flush();
   delay(3000);
 }
 
@@ -419,7 +457,7 @@ void count(bool state = true) { // state is true : countup
     else if(menu == 2) count_trig_float(&Pset, &select_digit, &PMax, &Pmin, state);
     else if(menu == 3) count_trig_float(&Rset, &select_digit, &RMax, &Rmin, state);
 
-    else if(menu == 5) {
+    else if(menu == 6) {
       switch(menu_setting) {
         case 1:
           count_trig_float(&Iin_maximum, &select_digit, &IMax, &Imin, state);
@@ -443,18 +481,30 @@ void count(bool state = true) { // state is true : countup
       }
     }
 
-    else if(menu == 6) {
+    else if(menu == 7) {
       if(menu_pid == 1) count_trig_float(&consKp, &digit_2, &gainMax, &gainmin, state);
       else if(menu_pid == 2) count_trig_float(&consKi, &digit_3, &gainMax, &gainmin, state);
       else if(menu_pid == 3) count_trig_float(&consKd, &digit_2, &gainMax, &gainmin, state);
       
     }
 
+    else if(menu == 4 && !capacityTest.running()) {
+      if(capacityEditField == 0) {
+        capacityCurrentA += state ? 0.1 : -0.1;
+        if(capacityCurrentA < 0.1) capacityCurrentA = 0.1;
+        if(capacityCurrentA > Iin_maximum) capacityCurrentA = Iin_maximum;
+      } else {
+        capacityCutoffV += state ? 0.1 : -0.1;
+        if(capacityCutoffV < 0.0) capacityCutoffV = 0.0;
+        if(capacityCutoffV > 999.9) capacityCutoffV = 999.9;
+      }
+    }
+
   } else 
 
   if(mode == 1) {
-    if(menu == 5) count_trig_int(&menu_setting, &digit_1, &menuItemMax, &menuItemmin, !state);
-    else if(menu == 6) count_trig_int(&menu_pid, &digit_1, &cursorPIDMax, &cursormin, !state);
+    if(menu == 6) count_trig_int(&menu_setting, &digit_1, &settingItemMax, &menuItemmin, !state);
+    else if(menu == 7) count_trig_int(&menu_pid, &digit_1, &cursorPIDMax, &cursormin, !state);
   }
 }
 
@@ -479,1160 +529,142 @@ void rotaryEncode() {
 ////////////////////////////////////////// ROTARY ENCODER ///////////////////////////////////////
 
 void readTemp() {
-  float v_ntc = (analogRead(temp_sense_pin) * 3.3) / 4095;
-  float R_ntc = ((3.3* 11000) / v_ntc) - 11000;
-  CurrentTemp = ( (beta) / ( log(R_ntc/R25) + (beta/To)) ) - 273 + 4 + adj_temp;
-}
-
-void updateTempSensor() {
-  // Tempurature sensor
-  readTemp();
-  if((int)CurrentTemp <= 99) {
-    lcd.setCursor(15, 0);
-    lcd.print(" ");
-    lcd.setCursor(16, 0);
-    lcd.print((int)CurrentTemp);
-    lcd.setCursor(18, 0);
-    lcd.print(char(223));
-    lcd.setCursor(19, 0);
-    lcd.print("C");
-  }else{
-    lcd.setCursor(15, 0);
-    lcd.print((int)CurrentTemp);
-    lcd.setCursor(18, 0);
-    lcd.print(char(223));
-    lcd.setCursor(19, 0);
-    lcd.print("C");
+  const int raw = analogRead(temp_sense_pin);
+  if(raw <= 0 || raw >= 4095) {
+    temperatureValid = false;
+    return;
+  }
+  const float v_ntc = (raw * 3.3f) / 4095.0f;
+  const float R_ntc = ((3.3f * 11000.0f) / v_ntc) - 11000.0f;
+  if(!isfinite(R_ntc) || R_ntc <= 0.0f) {
+    temperatureValid = false;
+    return;
+  }
+  const float measuredTemp = (beta / (log(R_ntc / R25) + (beta / To))) - 273.0f + 4.0f + adj_temp;
+  if(!isfinite(measuredTemp) || measuredTemp < -40.0f || measuredTemp > 200.0f) {
+    temperatureValid = false;
+    return;
+  }
+  CurrentTemp = measuredTemp;
+  temperatureUpdatedAt = millis();
+  temperatureValid = true;
+  if(CurrentTemp >= Temp_Max) {
+    onLoad = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
   }
 }
+
 
 void readVoltageAll() {
-  V0_ADC = ADS.readADC(1);  
-  V1_ADC = ADS.readADC(2); 
-  if (ADS.getError() == ADS1X15_OK)
-  { 
-    V_sense_1st = abs(V0_ADC * 0.001250);
-    V_sense_2nd = abs(V1_ADC * 0.001250);
-  }
+  // Values are maintained by the non-blocking sensor scheduler.
 }
 
-void readSensor() {
-  ADS.setGain(1); // Verf = 4.096 > Factor = 125uV / Bit;
+bool sensorsReady(uint32_t now) {
+  const uint8_t voltageIndex = V_sense_number ? 1 : 0;
+  return sensorSampler.healthy() && sensorSampler.currentValid() &&
+         sensorSampler.voltageValid(voltageIndex) &&
+         now - sensorSampler.currentTimestamp() <= SENSOR_STALE_TIMEOUT_MS &&
+         now - sensorSampler.voltageTimestamp(voltageIndex) <= SENSOR_STALE_TIMEOUT_MS &&
+         temperatureValid && now - temperatureUpdatedAt <= TEMPERATURE_STALE_TIMEOUT_MS;
+}
 
-  I_ADC = ADS.readADC(0);  
-  V0_ADC = ADS.readADC(1);  
-  V1_ADC = ADS.readADC(2);  
-
-  if (ADS.getError() == ADS1X15_OK)
-  { 
-
-    I_sense = abs(I_ADC * 0.001250);
-    if(V_sense_number == 0) {
-      V_sense_select = abs(V0_ADC * 0.001250);
-    }
-    else {
-      V_sense_select = abs(V1_ADC * 0.001250);
-    }
+void serviceSensorSampler(uint32_t now) {
+  currentSampleFresh = false;
+  voltageSampleFresh = false;
+  ElectronicLoadSensors::Sample sample;
+  if(!sensorSampler.service(now, sample)) return;
+  if(sample.channel == 0) {
+    I_ADC = sample.raw;
+    I_sense = fabs((double)I_ADC * 0.001250);
+    currentSampleFresh = true;
+  } else if(sample.channel == 1) {
+    V0_ADC = sample.raw;
+    V_sense_1st = fabs((double)V0_ADC * 0.001250);
+    voltageSampleFresh = V_sense_number == 0;
+  } else {
+    V1_ADC = sample.raw;
+    V_sense_2nd = fabs((double)V1_ADC * 0.001250);
+    voltageSampleFresh = V_sense_number == 1;
   }
 
-  // Power calculate
+  V_sense_select = V_sense_number ? V_sense_2nd : V_sense_1st;
   PowerOut = I_sense * V_sense_select;
+  Resistance = I_sense > 0.0001 ? V_sense_select / I_sense : 1000000.0;
 
-  // Resistance calculate
-  if(I_sense != 0.0001) {
-    Resistance = V_sense_select / I_sense;
-  } else { Resistance = 1000000.0;}
-  
-
-  if(menu == 1 && V_sense_select >= VIN_MIN) {
-    Iset_forCal  = Iset;
-  }
-  // if activate = 0 : PWM duty = 0
-  else if(menu == 2 && V_sense_select >= VIN_MIN) {// Protection
-    Iset_forCal  = Pset / V_sense_select;
-  }
-  else if(menu == 3 && Rset > 0.01) {// devide by zero
-    Iset_forCal  = V_sense_select / Rset;
-  }
-  
-  // Protection
-  // if(Iset_forCal  > Iin_maximum) Iset_forCal = 1.0;
   if(V_sense_select < VIN_MIN) {
-    Iset_forCal = 0; onLoad = 0;
+    Iset_forCal = 0.0;
+    onLoad = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
+  } else if(menu == 1) {
+    Iset_forCal = Iset;
+  } else if(menu == 2) {
+    Iset_forCal = Pset / V_sense_select;
+  } else if(menu == 3 && Rset > 0.01) {
+    Iset_forCal = V_sense_select / Rset;
+  } else if(menu == 4) {
+    Iset_forCal = capacityCurrentA;
   }
-
+  if(Iset_forCal > Iin_maximum) Iset_forCal = Iin_maximum;
 }
 
-void updateSensor() {
-  if( (menu == 1 ||  menu == 2 || menu == 3) && mode != 0 ) {
-    if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-      lastUpdateTempSensor = millis();
-      updateTempSensor();
-    }
-
-    if(millis() - LastupdateSensor >= updateSensor_time)
-    {
-      LastupdateSensor = millis();
-    // Voltage display
-      if(V_sense_select < 10.000) 
-      {
-        lcd.setCursor(2, 1);
-        lcd.print(" ");
-        lcd.setCursor(3, 1);
-        lcd.print(V_sense_select, 3);
-        lcd.setCursor(8, 1);
-        lcd.print("V");
-      }
-      else 
-      {
-        lcd.setCursor(2, 1);
-        lcd.print(V_sense_select, 3);
-        lcd.setCursor(8, 1);
-        lcd.print("V");
-      }
-
-    // Current Display 
-      if(I_sense < 10.000) 
-      {
-        lcd.setCursor(11, 1);
-        lcd.print(" ");
-        lcd.setCursor(12, 1);
-        lcd.print(I_sense, 3);
-        lcd.setCursor(17, 1);
-        lcd.print("A");
-      }
-      else 
-      {
-        lcd.setCursor(11, 1);
-        lcd.print(I_sense, 3);
-        lcd.setCursor(17, 1);
-        lcd.print("A");
-      }
-      
-    // Power Display 
-      
-      if(PowerOut < 10.000) 
-      {
-        lcd.setCursor(1, 2);
-        lcd.print("  ");
-        lcd.setCursor(3, 2);
-        lcd.print(PowerOut, 3);
-        lcd.setCursor(8, 2);
-        lcd.print("W");
-      }
-
-      else if(PowerOut < 100.000) 
-      {
-        lcd.setCursor(1, 2);
-        lcd.print(" ");
-        lcd.setCursor(2, 2);
-        lcd.print(PowerOut, 3);
-        lcd.setCursor(8, 2);
-        lcd.print("W");
-      }
-      else 
-      {
-        lcd.setCursor(1, 2);
-        lcd.print(PowerOut, 3);
-        lcd.setCursor(8, 2);
-        lcd.print("W");
-      }
-
-    // Resistance Display
-
-      if(Resistance< 10.0) 
-      {
-        lcd.setCursor(10, 2);
-        lcd.print("  ");
-        lcd.setCursor(12, 2);
-        lcd.print(Resistance, 3);
-        lcd.setCursor(17, 2);
-        lcd.print(char(244));
-        lcd.print(" ");
-      }
-      else if(Resistance < 100.0) 
-      { 
-        lcd.setCursor(10, 2);
-        lcd.print(" ");
-        lcd.setCursor(11, 2);
-        lcd.print(Resistance, 3);
-        lcd.setCursor(17, 2);
-        lcd.print(char(244));
-        lcd.print(" ");
-      }
-      else if(Resistance < 1000.0)
-      {
-        lcd.setCursor(10, 2);
-        lcd.print(Resistance, 3);
-        lcd.setCursor(17, 2);
-        lcd.print(char(244));
-        lcd.print(" ");
-      }
-      else if(Resistance < 10000.0){
-        lcd.setCursor(10, 2);
-        lcd.print("  ");
-        lcd.setCursor(12, 2);
-        lcd.print( (Resistance/1000.0) , 3);
-        lcd.setCursor(17, 2);
-        lcd.print("k");
-        lcd.setCursor(18, 2);
-        lcd.print(char(244));
-        lcd.print(" ");
-      } else {
-        lcd.setCursor(10, 2);
-        lcd.print("  inf  ");
-        lcd.setCursor(17, 2);
-        lcd.print(char(244));
-        lcd.print(" ");
-      }
-    }
+void tryStartCapacityTest() {
+  const uint32_t now = millis();
+  capacityStartReady = sensorsReady(now) && V_sense_select >= VIN_MIN &&
+                       capacityCutoffV > 0.1 && V_sense_select > capacityCutoffV;
+  if(!capacityStartReady) return;
+  if(capacityTest.start(now, capacityCurrentA, capacityCutoffV, Iin_maximum,
+                        V_sense_select, I_sense, CurrentTemp, sensorsReady(now),
+                        temperatureValid, Temp_Max)) {
+    Iset_forCal = capacityCurrentA;
+    onLoad = true;
   }
 }
 
-void updateRunMode() {
-  if(mode != 0) {
-    if(onLoad == 1 && (millis() - lastPressRedButton >= 500)) {
-      lastPressRedButton = millis();
-      lcd.setCursor(15, 3);
-      lcd.print(minut / 10);
-      lcd.print(minut % 10);
-      lcd.print(":");
-      lcd.print(sec / 10);
-      lcd.print(sec % 10);
-    }
-    if(onLoad == 0) {
-      if(millis() - lastBlinkArrow >= 500) {
-        lcd.setCursor(15, 3);
-        lcd.print("  OFF");
-      }
-      if(millis() - lastBlinkArrow >= 1000) {
-        lastBlinkArrow = millis();
-        lcd.setCursor(15, 3);
-        lcd.print(" ");
-        lcd.write(0); // arrow
-      }
-      sec = 0; minut = 0; 
-    }
-  } 
-  else 
-  {
-    sec = 0; minut = 0; 
+void serviceCapacityTest(uint32_t now, bool newCurrentSample, bool newVoltageSample) {
+  capacityStartReady = sensorsReady(now) && V_sense_select >= VIN_MIN &&
+                       capacityCutoffV > 0.1 && V_sense_select > capacityCutoffV;
+  capacityTest.update(now, newCurrentSample, newVoltageSample, V_sense_select,
+                      I_sense, CurrentTemp, sensorsReady(now), temperatureValid,
+                      Temp_Max, (uint32_t)timeMax * 60000UL);
+  if(!capacityTest.running()) {
+    onLoad = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
   }
-  digitalWrite(gateCtrl_pinOut, onLoad);
 }
+
+void sendSerialTelemetry(uint32_t now) {
+  if(now - lastSerialTelemetry < SERIAL_TELEMETRY_INTERVAL_MS) return;
+  lastSerialTelemetry = now;
+  // Serial Oscilloscope maps numeric CSV fields in order: CH1=voltage, CH2=current.
+  Serial.print(V_sense_select, 3);
+  Serial.write(',');
+  Serial.println(I_sense, 3);
+}
+
+
 
 int lastNumSubBars1;
 int lastNumSubBars2;
 
-void printBar(float data, float maxData, int maxBars, uint8_t column, uint8_t row, int *lastNumSubBars) {
 
-  int numSubBars = map(data, 0, maxData, 0, maxBars);
 
-  if (numSubBars < *lastNumSubBars) {
-    for (int i = numSubBars / 5 ; i < (*lastNumSubBars / 5) + 1; i++) {
-        lcd.setCursor(i + column, row);
-        lcd.print(" "); 
-    }
-  }
 
-  lcd.setCursor(column, row);
-  for (int i = 0; i < numSubBars / 5; i++) {
-      lcd.write(5); 
-  }
 
-  int remainder = numSubBars % 5;
-  if (remainder > 0) {
-      lcd.write(remainder);
-  }
 
-  *lastNumSubBars = numSubBars;
 
-}
 
-void drawSetValue_setMode(float value, String txt, uint8_t digit) {
-  lcd.setCursor(0, 3);
-  lcd.print("Set");
-  if(digit < 3) {
-    if(value < 10.00) {
-      lcd.setCursor(4, 3);
-      lcd.print("0");
-      lcd.setCursor(5, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(10, 3);
-      lcd.print(txt);
-    } 
-    else {
-      lcd.setCursor(4, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(10, 3);
-      lcd.print(txt);
-    }
-  }
-  else if(digit == 3) {
-    if(value < 10.00) {
-      lcd.setCursor(4, 3);
-      lcd.print("00");
-      lcd.setCursor(6, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(11, 3);
-      lcd.print(txt);
-    } 
-    else if(value < 100.00){
-      lcd.setCursor(4, 3);
-      lcd.print("0");
-      lcd.setCursor(5, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(11, 3);
-      lcd.print(txt);
-    }else{
-      lcd.setCursor(4, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(11, 3);
-      lcd.print(txt);
-    }
-  }
-  else if(digit == 4) {
-    if(value < 10.00) {
-      lcd.setCursor(4, 3);
-      lcd.print("000");
-      lcd.setCursor(7, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(12, 3);
-      lcd.print(txt);
-    } 
-    else if(value < 100.00){
-      lcd.setCursor(4, 3);
-      lcd.print("00");
-      lcd.setCursor(6, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(12, 3);
-      lcd.print(txt);
-    }
-    else if(value < 1000.00){
-      lcd.setCursor(4, 3);
-      lcd.print("0");
-      lcd.setCursor(5, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(12, 3);
-      lcd.print(txt);
-    }
-    else {
-      lcd.setCursor(4, 3);
-      lcd.print(value, 3);
-      lcd.setCursor(12, 3);
-      lcd.print(txt);
-    }
-  }
-}
 
-void drawSetValue_RunMode(float value, String txt) {
-  lcd.setCursor(0, 3);
-  lcd.print("Set");
-  if(value < 10.00) {
-    lcd.setCursor(4, 3);
-    lcd.print(value, 3);
-    // lcd.setCursor(12, 3);
-    lcd.print(txt);
-  } 
-  else if(value < 100.00){
-    lcd.setCursor(4, 3);
-    lcd.print(value, 3);
-    // lcd.setCursor(11, 3);
-    lcd.print(txt);
-  }
-  else if(value < 1000.00){
-    lcd.setCursor(4, 3);
-    lcd.print(value, 3);
-    // lcd.setCursor(12, 3);
-    lcd.print(txt);
-  }
-  else {
-    lcd.setCursor(4, 3);
-    lcd.print((value/1000), 3);
-    lcd.setCursor(12, 3);
-    lcd.print("K");
-    // lcd.setCursor(13, 3);
-    lcd.print(txt);
-  }
-}
 
-void menu0_MainMenu() {
-  lcd.setCursor(0, 0);
-  lcd.print(char(0xff));
-  lcd.setCursor(1, 0);
-  lcd.print("Select Function");
 
-  rotaryEncode();
-  rotaryButton.read();
-
-  if(menu - frame == 3) {
-    frame++;
-  }
-
-  else if(frame - menu == 1) {
-    frame--;
-  }
-  
-  lcd.setCursor(0, menu - frame + 1);
-  lcd.write(0); 
-
-  if (menu - frame == 0) {
-    lcd.setCursor(0, 2);
-    lcd.print(" "); 
-    lcd.setCursor(0, 3);
-    lcd.print(" "); 
-    rotaryEncode();
-
-  } 
-  else if (menu - frame == 2) {
-    lcd.setCursor(0, 1);
-    lcd.print(" "); 
-    lcd.setCursor(0, 2);
-    lcd.print(" ");
-    rotaryEncode();
-
-  }
-  else {
-    lcd.setCursor(0, 1);
-    lcd.print(" "); 
-    lcd.setCursor(0, 3);
-    lcd.print(" "); 
-    rotaryEncode();
-  }
-
-  lcd.setCursor(1, 1);
-  lcd.print(menuList[frame - 1]);
-  lcd.setCursor(1, 2);
-  lcd.print(menuList[frame + 0]);
-  lcd.setCursor(1, 3);
-  lcd.print(menuList[frame + 1]);
-  rotaryEncode();
-}
-
-void menu1_constCurrent() {
-  // if mode = 1 : Pre-Run Mode
-  // if mode = 2 : Set value Mode
-  rotaryEncode();
-  switch (mode) {
-    case 1:    
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("Const Current");
-        drawSetValue_RunMode(Iset, "A");
-      }
-      // update sensor
-      updateSensor();
-      break;
-
-    case 2:
-      updateSensor();
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 3);
-        lcd.print("Set");
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("I Setpoint");
-        drawSetValue_RunMode(Iset, "A");
-      }
-      if((millis() - lastBlink) >= 500) {
-        lastBlink = millis();
-        rotaryEncode();
-        drawSetValue_setMode(Iset, "A", 2);
-      }
-      if((millis() - lastBlink) >= 250) {//  select_digit
-        rotaryEncode();
-        switch (select_digit) {
-          case 0:
-            lcd.setCursor(9, 3);
-            lcd.print(char(0xff));
-            break;
-          case 1:
-            lcd.setCursor(8, 3);
-            lcd.print(char(0xff));
-            break;
-          case 2:
-            lcd.setCursor(7, 3);
-            lcd.print(char(0xff));
-            break;
-          case 3:
-            lcd.setCursor(5, 3);
-            lcd.print(char(0xff));
-            break;
-          case 4:
-            lcd.setCursor(4, 3);
-            lcd.print(char(0xff));
-            break;
-        }
-        
-        break;
-      }
-      break;
-  }
-}
-
-void menu2_constPower() {
-  // if mode = 1 : Pre-Run Mode
-  // if mode = 2 : Set value Mode
-  rotaryEncode();
-  switch (mode) {
-    case 1:    
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("Const Power");
-        drawSetValue_RunMode(Pset, "W");
-      }
-
-      if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-        lastUpdateTempSensor = millis();
-        updateTempSensor();
-      }
-      break;
-    case 2:
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 3);
-        lcd.print("Set");
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("Power Setpoint");
-        drawSetValue_RunMode(Pset, "W");
-      }
-
-      if((millis() - lastBlink) >= 400) {
-        lastBlink = millis();
-        rotaryEncode();
-        drawSetValue_setMode(Pset, "W", 3);
-      }
-      if((millis() - lastBlink) >= 200) {//  select_digit
-        rotaryEncode();
-        switch (select_digit) {
-          case 0:
-            lcd.setCursor(10, 3);
-            lcd.print(char(0xff));
-            break;
-          case 1:
-            lcd.setCursor(9, 3);
-            lcd.print(char(0xff));
-            break;
-          case 2:
-            lcd.setCursor(8, 3);
-            lcd.print(char(0xff));
-            break;
-          case 3:
-            lcd.setCursor(6, 3);
-            lcd.print(char(0xff));
-            break;
-          case 4:
-            lcd.setCursor(5, 3);
-            lcd.print(char(0xff));
-            break;
-          case 5:
-            lcd.setCursor(4, 3);
-            lcd.print(char(0xff));
-            break;
-        }
-        
-        break;
-      }
-      break;
-  }
-}
-
-void menu3_constResistance() {
-  // if mode = 1 : Pre-Run Mode
-  // if mode = 2 : Set value Mode
-  rotaryEncode();
-  switch (mode) {
-    case 1:    
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("Constant R.");
-        drawSetValue_RunMode(Rset, String(char(244)) );
-      }
-
-      if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-        lastUpdateTempSensor = millis();
-        updateTempSensor();
-      }
-      break;
-    case 2:
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 3);
-        lcd.print("Set");
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("R. Setpoint");
-        drawSetValue_RunMode(Rset, String(char(244)) );
-      }
-
-      if((millis() - lastBlink) >= 400) {
-        lastBlink = millis();
-        rotaryEncode();
-        drawSetValue_setMode(Rset, String(char(244)) , 4);
-      }
-      if((millis() - lastBlink) >= 200) {//  select_digit
-        rotaryEncode();
-        switch (select_digit) {
-          case 0:
-            lcd.setCursor(11, 3);
-            lcd.print(char(0xff));
-            break;
-          case 1:
-            lcd.setCursor(10, 3);
-            lcd.print(char(0xff));
-            break;
-          case 2:
-            lcd.setCursor(9, 3);
-            lcd.print(char(0xff));
-            break;
-          case 3:
-            lcd.setCursor(7, 3);
-            lcd.print(char(0xff));
-            break;
-          case 4:
-            lcd.setCursor(6, 3);
-            lcd.print(char(0xff));
-            break;
-          case 5:
-            lcd.setCursor(5, 3);
-            lcd.print(char(0xff));
-            break;
-          case 6:
-            lcd.setCursor(4, 3);
-            lcd.print(char(0xff));
-            break;
-        }
-        
-        break;
-      }
-      break;
-  }
-}
-
-void menu4_VDM() {
-  // if mode = 1 : Pre-Run Mode
-  // if mode = 2 : Set value Mode
-  // rotaryEncode();
-  switch (mode) {
-    case 1:    
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("Voltmeter");
-        lcd.setCursor(1, 1);
-        lcd.print("CH0");
-        lcd.setCursor(11, 1);
-        lcd.print("CH1");
-      }
-
-      if(millis() - LastupdateSensor >= updateVoltage_time)
-      {
-        LastupdateSensor = millis();
-
-        readVoltageAll();
-      // Voltage display
-
-        if(V_sense_1st < 10.000) 
-        {
-          lcd.setCursor(1, 2);
-          lcd.print("0");
-          lcd.setCursor(2, 2);
-          lcd.print(V_sense_1st, 4);
-          lcd.setCursor(9, 2);
-          lcd.print("V");
-        }
-        else 
-        {
-          lcd.setCursor(1, 2);
-          lcd.print(V_sense_1st, 4);
-          lcd.setCursor(9, 2);
-          lcd.print("V");
-        }
-
-        
-
-        if(V_sense_2nd < 10.000) 
-        {
-          lcd.setCursor(11, 2);
-          lcd.print("0");
-          lcd.setCursor(12, 2);
-          lcd.print(V_sense_2nd, 4);
-          lcd.setCursor(19, 2);
-          lcd.print("V");
-        }
-        else 
-        {
-          lcd.setCursor(11, 2);
-          lcd.print(V_sense_2nd, 4);
-          lcd.setCursor(19, 2);
-          lcd.print("V");
-        }
-
-        printBar(V_sense_1st, 30.0, 42, 1, 3, &lastNumSubBars1);
-        printBar(V_sense_2nd, 30.0, 42, 11, 3, &lastNumSubBars2);
-
-      }
-
-      if(millis() - lastBlinkArrow >= 500) {
-        lcd.setCursor(15, 0);
-        lcd.print("  RUN");
-      }
-      if(millis() - lastBlinkArrow >= 1000) {
-        lastBlinkArrow = millis();
-        lcd.setCursor(15, 0);
-        lcd.print(" ");
-        lcd.write(0); // arrow
-      }
-
-      break;
-    case 2:
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-        lcd.setCursor(0, 0);
-        lcd.print("NOTHING");
-      }
-
-      // if((millis() - lastBlink) >= 400) {
-      //   lastBlink = millis();
-      //   rotaryEncode();
-      //   drawSetValue_setMode(Rset, String(char(244)) , 4);
-      // }
-      // if((millis() - lastBlink) >= 200) {//  select_digit
-      //   rotaryEncode();
-      //   switch (select_digit) {
-      //     case 0:
-      //       lcd.setCursor(11, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //     case 1:
-      //       lcd.setCursor(10, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //     case 2:
-      //       lcd.setCursor(9, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //     case 3:
-      //       lcd.setCursor(7, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //     case 4:
-      //       lcd.setCursor(6, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //     case 5:
-      //       lcd.setCursor(5, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //     case 6:
-      //       lcd.setCursor(4, 3);
-      //       lcd.print(char(0xff));
-      //       break;
-      //   }
-        
-      //   break;
-      // }
-      break;
-  }
-}
-
-void menu5_setting() {
-  // if mode = 1 : Pre-Run Mode
-  // if mode = 2 : Set value Mode
-  // rotaryEncode();
-  switch (mode) {
-    case 1:    
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-
-      lcd.setCursor(0, 0);
-      lcd.print(char(0xff));
-      lcd.setCursor(1, 0);
-      lcd.print("Utility");
-      }
-
-      rotaryEncode();
-      rotaryButton.read();
-
-      if(menu_setting - frame_setting == 3) {
-        frame_setting++;
-      }
-
-      else if(frame_setting - menu_setting == 1) {
-        frame_setting--;
-      }
-      
-      lcd.setCursor(0, menu_setting - frame_setting + 1);
-      lcd.write(0); 
-
-      if (menu_setting - frame_setting == 0) {
-        lcd.setCursor(0, 2);
-        lcd.print(" "); 
-        lcd.setCursor(0, 3);
-        lcd.print(" "); 
-        rotaryEncode();
-
-      } 
-      else if (menu_setting - frame_setting == 2) {
-        lcd.setCursor(0, 1);
-        lcd.print(" "); 
-        lcd.setCursor(0, 2);
-        lcd.print(" ");
-        rotaryEncode();
-
-      }
-      else {
-        lcd.setCursor(0, 1);
-        lcd.print(" "); 
-        lcd.setCursor(0, 3);
-        lcd.print(" "); 
-        rotaryEncode();
-      }
-
-      lcd.setCursor(1, 1);
-      lcd.print(settingList[frame_setting - 1]);
-      lcd.setCursor(1, 2);
-      lcd.print(settingList[frame_setting + 0]);
-      lcd.setCursor(1, 3);
-      lcd.print(settingList[frame_setting + 1]);
-      rotaryEncode();
-      break;
-    case 2:
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-      }
-      lcd.setCursor(0, 0);
-      lcd.print(char(0xff));
-      lcd.setCursor(1, 0);
-      lcd.print(settingList[menu_setting - 1]);
-
-      switch(menu_setting) {
-        case 1: // Set Current Max 
-          lcd.setCursor(0, 1); lcd.print("IMax : ");
-          if(Iin_maximum < 10) {
-            lcd.setCursor(7, 1); 
-            lcd.print("0");
-            lcd.setCursor(8, 1); 
-            lcd.print(Iin_maximum, 1);
-          }else{
-            lcd.setCursor(7, 1); 
-            lcd.print(Iin_maximum, 1);
-          }
-          lcd.setCursor(11, 1); 
-          lcd.print("A");
-          break;
-        case 2: // Select Vsense
-          lcd.setCursor(0, cursor - 1 + 1);
-          lcd.write(0); 
-          if (cursor - 1 == 0) {
-            lcd.setCursor(0, 2);
-            lcd.print(" "); 
-            lcd.setCursor(0, 3);
-            lcd.print(" "); 
-            rotaryEncode();
-
-          } 
-          else if (cursor - 1 == 2) {
-            lcd.setCursor(0, 1);
-            lcd.print(" "); 
-            lcd.setCursor(0, 2);
-            lcd.print(" ");
-            rotaryEncode();
-
-          }
-          else {
-            lcd.setCursor(0, 1);
-            lcd.print(" "); 
-            lcd.setCursor(0, 3);
-            lcd.print(" "); 
-            rotaryEncode();
-          }
-          lcd.setCursor(1, 1);
-          lcd.print("V0 : Input");
-          lcd.setCursor(1, 2);
-          lcd.print("V1 : VOLT");
-          rotaryEncode();
-          break;
-        case 3: // Select Fan mode
-          lcd.setCursor(0, cursor - 1 + 1);
-          lcd.write(0); 
-          if (cursor - 1 == 0) {
-            lcd.setCursor(0, 2);
-            lcd.print(" "); 
-            lcd.setCursor(0, 3);
-            lcd.print(" "); 
-            rotaryEncode();
-
-          } 
-          else if (cursor - 1 == 2) {
-            lcd.setCursor(0, 1);
-            lcd.print(" "); 
-            lcd.setCursor(0, 2);
-            lcd.print(" ");
-            rotaryEncode();
-
-          }
-          else {
-            lcd.setCursor(0, 1);
-            lcd.print(" "); 
-            lcd.setCursor(0, 3);
-            lcd.print(" "); 
-            rotaryEncode();
-          }
-          lcd.setCursor(1, 1);
-          lcd.print(FanList[0]);
-          lcd.setCursor(1, 2);
-          lcd.print(FanList[1]);
-          rotaryEncode();
-          break;
-        case 4: // Set Runtime Max 
-          lcd.setCursor(0, 1); lcd.print("Runtime Max: ");
-          if(timeMax < 10) {
-            lcd.setCursor(13, 1); 
-            lcd.print("0");
-            lcd.setCursor(14, 1); 
-            lcd.print(timeMax);
-          }else{
-            lcd.setCursor(13, 1); 
-            lcd.print(timeMax);
-          }
-          lcd.setCursor(15, 1); 
-          lcd.print("min");
-          break;
-        case 5: // Set Temp shutdown
-          lcd.setCursor(0, 1); lcd.print("Max:");
-          if(Temp_Max <= 99) {
-            lcd.setCursor(4, 1); 
-            lcd.print(" ");
-            lcd.setCursor(5, 1); 
-            lcd.print(Temp_Max);
-          }else{
-            lcd.setCursor(4, 1); 
-            lcd.print(Temp_Max);
-          }
-          lcd.setCursor(7, 1); 
-          lcd.print(char(223));
-          lcd.setCursor(8, 1);
-          lcd.print("C");
-          break;
-      }
-      break;
-  }
-}
-
-void menu6_PID() {
-  // if mode = 1 : Pre-Run Mode
-  // if mode = 2 : Set value Mode
-  rotaryEncode();
-  switch (mode) {
-    case 1:    
-      if(previous_mode != mode) {
-        previous_mode = mode;
-        lcd.clear();
-
-        lcd.setCursor(0, 0);
-        lcd.print(char(0xff));
-        lcd.setCursor(1, 0);
-        lcd.print("PID Tuner");
-      }
-
-      rotaryEncode();
-      rotaryButton.read();
-      
-      lcd.setCursor(0, menu_pid - frame_pid + 1);
-      lcd.write(0); 
-
-      if (menu_pid - frame_pid == 0) {
-        lcd.setCursor(0, 2);
-        lcd.print(" "); 
-        lcd.setCursor(0, 3);
-        lcd.print(" "); 
-        rotaryEncode();
-
-      } 
-      else if (menu_pid - frame_pid == 2) {
-        lcd.setCursor(0, 1);
-        lcd.print(" "); 
-        lcd.setCursor(0, 2);
-        lcd.print(" ");
-        rotaryEncode();
-
-      }
-      else {
-        lcd.setCursor(0, 1);
-        lcd.print(" "); 
-        lcd.setCursor(0, 3);
-        lcd.print(" "); 
-        rotaryEncode();
-      }
-
-      rotaryEncode();
-      lcd.setCursor(1, 1);
-      lcd.print(PIDList[frame_pid - 1]);
-      lcd.setCursor(7, 1);
-      lcd.print(consKp, 1);
-      lcd.setCursor(1, 2);
-      lcd.print(PIDList[frame_pid + 0]);
-
-      if(consKi < 9.99) {
-        lcd.setCursor(5, 2);
-        lcd.print("  ");
-        lcd.setCursor(7, 2);
-        lcd.print(consKi, 1);
-      }
-      else if(consKi < 99.99){
-        lcd.setCursor(5, 2);
-        lcd.print(" ");
-        lcd.setCursor(6, 2);
-        lcd.print(consKi, 1);
-      } else {
-        lcd.setCursor(5, 2);
-        lcd.print(consKi, 1);
-      }
-
-      lcd.setCursor(1, 3);
-      lcd.print(PIDList[frame_pid + 1]);
-      lcd.setCursor(7, 3);
-      lcd.print(consKd, 1);
-      rotaryButton.read();
-      break; 
-
-    case 2:
-      if((millis() - lastBlink) >= 500) {
-        lastBlink = millis();
-        rotaryEncode();
-        lcd.setCursor(1, 1);
-        lcd.print(PIDList[frame_pid - 1]);
-        lcd.setCursor(7, 1);
-        lcd.print(consKp, 1);
-        lcd.setCursor(1, 2);
-        lcd.print(PIDList[frame_pid + 0]);
-
-        if(consKi < 9.99) {
-          lcd.setCursor(5, 2);
-          lcd.print("  ");
-          lcd.setCursor(7, 2);
-          lcd.print(consKi, 1);
-        }
-        else if(consKi < 99.99){
-          lcd.setCursor(5, 2);
-          lcd.print(" ");
-          lcd.setCursor(6, 2);
-          lcd.print(consKi, 1);
-        } else {
-          lcd.setCursor(5, 2);
-          lcd.print(consKi, 1);
-        }
-
-        lcd.setCursor(1, 3);
-        lcd.print(PIDList[frame_pid + 1]);
-        lcd.setCursor(7, 3);
-        lcd.print(consKd, 1);
-        rotaryButton.read();
-      }
-      if((millis() - lastBlink) >= 250) {
-        
-        if(menu_pid == 2) lcd.setCursor(7, menu_pid);
-        else lcd.setCursor(9, menu_pid);
-        lcd.print(char(0xff));
-      }
-      break;
-  }
-}
-
-void runMenu() {
-  if(mode == 0) {
-    if(previous_mode != mode) {
-      previous_mode = mode;
-      lcd.clear();
-      onLoad = 0;
-    }
-    menu0_MainMenu();
-  } 
-
-  else 
-  {
-    if(menu == 1) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        onLoad = 0;
-      }
-      menu1_constCurrent();
-    } 
-
-    else if(menu == 2) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        onLoad = 0;
-      }
-      menu2_constPower();
-    } 
-    
-    else if(menu == 3) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        onLoad = 0;
-      }
-      menu3_constResistance();
-    } 
-
-    else if(menu == 4) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        onLoad = 0;
-      }
-      menu4_VDM();
-    } 
-
-    else if(menu == 5) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        // load can on
-      }
-      menu5_setting();
-    }
-
-    else if(menu == 6) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        // load can on
-      }
-      menu6_PID();
-    } else { }
-  }
-}
 
 void readInput() {
   rotaryEncode();
@@ -1642,40 +674,34 @@ void readInput() {
 }
 
 void setDuty_PID() {
+  static bool wasEnabled = false;
+  static double lastKp = NAN, lastKi = NAN, lastKd = NAN;
+  if(!sensorsReady(millis()) || !onLoad || Iset_forCal <= 0.0) {
+    onLoad = false;
+    wasEnabled = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
+    return;
+  }
   Setpoint = Iset_forCal;
   Input = I_sense;
-
-  if(onLoad == 1) {
-    // if((millis() - onLoad_time >= 1) && loadFlag == 1) {
-    //   onLoad_time = millis();
-    //   dutyCycle = dutyCycle + 200;
-    //   ledcWrite(PWM_pinOut, dutyCycle);
-    //   // if duty >= persent of Setpoint, that be going set to PID controller
-    //   if(dutyCycle >= (dutyFactor * Iset_forCal) * 0.1) {
-    //     loadFlag = 0;
-    //   }
-    // }
-    // if(loadFlag == 0) {
-      calPID.SetTunings(consKp, consKi, consKd);
-      calPID.Compute();
-      dutyCycle = dutyFactor * Output;
-    // }
-
-  } 
-  else {
-    loadFlag = 1;
-    onLoad_time = 0;
-    Setpoint = 0;
-    Input = dutyCycle * dutyFactor;
+  if(consKp != lastKp || consKi != lastKi || consKd != lastKd) {
     calPID.SetTunings(consKp, consKi, consKd);
-    calPID.Compute();
-    dutyCycle = dutyFactor * Output;
+    lastKp = consKp; lastKi = consKi; lastKd = consKd;
   }
-
-  ledcWrite(PWM_pinOut, dutyCycle);
-
-  Serial.print("I:");
-  Serial.println(I_sense);
+  if(!wasEnabled) {
+    Output = 0.0;
+    calPID.SetMode(MANUAL);
+    calPID.SetMode(AUTOMATIC);
+    wasEnabled = true;
+  }
+  if(calPID.Compute()) {
+    dutyCycle = (int)(dutyFactor * Output);
+    ledcWrite(PWM_pinOut, dutyCycle);
+  }
+  digitalWrite(gateCtrl_pinOut, HIGH);
 }
 
 uint32_t updateFan_time;
@@ -1683,16 +709,13 @@ void updateFanTrig(int time) {
 
   if((millis() - updateFan_time >= time) && AutoFanMode == true) {
     updateFan_time = millis();
-    readTemp();
-    if(CurrentTemp >= FanTrig_TempUpper) FanTrig = true;
-    else if(CurrentTemp <= FanTrig_TempLower) FanTrig = false;
-    
-    if(CurrentTemp >= Temp_Max) onLoad = false;
-    digitalWrite(fanCtrl_pinOut, FanTrig);
+    if(temperatureValid) {
+      if(CurrentTemp >= FanTrig_TempUpper) FanTrig = true;
+      else if(CurrentTemp <= FanTrig_TempLower) FanTrig = false;
+    }
   }
-
+  if(AutoFanMode) digitalWrite(fanCtrl_pinOut, FanTrig || !temperatureValid);
   if(AutoFanMode == false ) digitalWrite(fanCtrl_pinOut, onLoad);
-
 }
 
 void clock_count() {
@@ -1715,9 +738,8 @@ void clock_count() {
 }
 
 void setup() {
-  Serial.begin(112500);
+  Serial.begin(115200);
   Wire.begin();
-  ADS.begin();
 
   lcd.init();
   lcd.backlight();
@@ -1728,7 +750,7 @@ void setup() {
   lcd.createChar(4, subBar4);
   lcd.createChar(5, subBar5);
   printBegin();
-  analogReadResolution(4096);
+  analogReadResolution(12);
   // analogWriteResolution(buzzer_pin ,12);
   // analogWriteFrequency(buzzer_pin, 5000);
 
@@ -1773,37 +795,37 @@ void setup() {
 
   //PID Tuner
   calPID.SetOutputLimits(Imin, Iin_maximum);
-  calPID.SetSampleTime(1);
+  calPID.SetSampleTime(PID_SAMPLE_INTERVAL_MS);
   calPID.SetMode(AUTOMATIC);
+  sensorSampler.begin(millis());
+  readTemp();
 
 }
 
 void loop() {
+  const uint32_t now = millis();
   readInput();
   runMenu();
-  rotaryEncode();
-  readSensor();
-  
-  // Set Duty cycle
-  
+  serviceSensorSampler(now);
+  if(now - lastUpdateTempSensor >= updateTemp_time) {
+    lastUpdateTempSensor = now;
+    readTemp();
+  }
+  if(capacityTest.running() && (menu != 4 || mode != 1)) {
+    capacityTest.stop(now);
+    onLoad = false;
+  }
+  if(menu == 4 && capacityTest.running()) Iset_forCal = capacityCurrentA;
+  if(menu == 4) serviceCapacityTest(now, currentSampleFresh, voltageSampleFresh);
   setDuty_PID();
 
-  // Serial.print("duty:");
-  // Serial.print(dutyCycle*0.00152);
-  // Serial.print(",");
-
-  
-
-
-  // update sensor every 0.5 secconds
   updateSensor(); 
   if(menu == 1 || menu == 2 || menu == 3) {
     updateRunMode();
   }
 
   updateFanTrig(3000);
-  
-  rotaryEncode();
-
-  clock_count();
+  if(menu != 4) clock_count();
+  sendSerialTelemetry(now);
+  lcd.flush();
 }
