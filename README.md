@@ -2,6 +2,8 @@
 
 Firmware and KiCad design files for a programmable DC electronic load controlled by an ESP32. The firmware measures voltage and current through an external ADC, drives the load through PWM, and provides a local LCD and rotary-encoder interface.
 
+Licensed under the [MIT License](LICENSE).
+
 ## Hardware
 
 <p align="center">
