@@ -27,14 +27,10 @@ public:
   size_t write(uint8_t value);
   size_t print(char value);
   size_t print(const char *value);
-  size_t print(const String &value);
-
-  template <typename T>
-  size_t print(T value) {
-    String text(value);
-    return print(text);
-  }
-
+  size_t print(int value);
+  size_t print(unsigned int value);
+  size_t print(long value);
+  size_t print(unsigned long value);
   size_t print(double value, int digits);
   void flush();
 };

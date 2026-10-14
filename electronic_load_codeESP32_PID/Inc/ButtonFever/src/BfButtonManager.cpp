@@ -76,7 +76,6 @@ void BfButtonManager::loop() {
 uint16_t BfButtonManager::printReading(uint8_t pin) {
   int z;
   z = analogRead(pin);
-  if (z > 100) Serial.println(z);
   return z;
 }
 

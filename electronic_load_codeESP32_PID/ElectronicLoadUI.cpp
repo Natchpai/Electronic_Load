@@ -1,9 +1,11 @@
 #include "ElectronicLoadUI.h"
 #include "ElectronicLoadConfig.h"
 #include "ElectronicLoadDisplay.h"
+#include "ElectronicLoadCapacityTest.h"
 #include "BfButton.h"
 
 #include <math.h>
+#include <stdio.h>
 
 extern float CurrentTemp;
 extern int menu;
@@ -21,7 +23,7 @@ extern uint8_t sec;
 extern uint32_t lastBlinkArrow;
 extern byte arrow[8];
 extern uint8_t frame;
-extern String menuList[6];
+extern const char *menuList[7];
 extern uint8_t previous_mode;
 extern double Iset;
 extern double Pset;
@@ -32,16 +34,16 @@ extern int lastNumSubBars1;
 extern int lastNumSubBars2;
 extern int menu_setting;
 extern int frame_setting;
-extern String settingList[6];
+extern const char *settingList[6];
 extern double IMax;
 extern double Iin_maximum;
 extern int cursor;
-extern String FanList[2];
+extern const char *FanList[2];
 extern int timeMax;
 extern int Temp_Max;
 extern int menu_pid;
 extern int frame_pid;
-extern String PIDList[3];
+extern const char *PIDList[3];
 extern double consKp;
 extern double consKi;
 extern double consKd;
@@ -49,14 +51,35 @@ extern uint8_t previous_menu;
 extern uint32_t lastBlink;
 extern uint8_t select_digit;
 extern BfButton rotaryButton;
+extern ElectronicLoadCapacityTest capacityTest;
+extern double capacityCurrentA;
+extern double capacityCutoffV;
+extern uint8_t capacityEditField;
+extern bool temperatureValid;
+extern bool capacityStartReady;
 
-void readTemp();
 void readVoltageAll();
 void rotaryEncode();
 
+namespace {
+const char ohmUnit[] = { static_cast<char>(244), '\0' };
+
+void writeCapacityRow(uint8_t row, const char *text) {
+  char line[21];
+  uint8_t column = 0;
+  while (column < 20 && text[column] != '\0') {
+    line[column] = text[column];
+    column++;
+  }
+  while (column < 20) line[column++] = ' ';
+  line[20] = '\0';
+  lcd.setCursor(0, row);
+  lcd.print(line);
+}
+}
+
 void updateTempSensor() {
-  // Tempurature sensor
-  readTemp();
+  // Temperature is sampled by the main scheduler; this function only paints it.
   if((int)CurrentTemp <= 99) {
     lcd.setCursor(15, 0);
     lcd.print(" ");
@@ -259,7 +282,7 @@ void printBar(float data, float maxData, int maxBars, uint8_t column, uint8_t ro
 
 }
 
-void drawSetValue_setMode(float value, String txt, uint8_t digit) {
+void drawSetValue_setMode(float value, const char *txt, uint8_t digit) {
   lcd.setCursor(0, 3);
   lcd.print("Set");
   if(digit < 3) {
@@ -335,7 +358,7 @@ void drawSetValue_setMode(float value, String txt, uint8_t digit) {
   }
 }
 
-void drawSetValue_RunMode(float value, String txt) {
+void drawSetValue_RunMode(float value, const char *txt) {
   lcd.setCursor(0, 3);
   lcd.print("Set");
   if(value < 10.00) {
@@ -574,7 +597,7 @@ void menu3_constResistance() {
         lcd.print(char(0xff));
         lcd.setCursor(1, 0);
         lcd.print("Constant R.");
-        drawSetValue_RunMode(Rset, String(char(244)) );
+        drawSetValue_RunMode(Rset, ohmUnit);
       }
 
       if(millis() - lastUpdateTempSensor >= updateTemp_time) {
@@ -592,13 +615,13 @@ void menu3_constResistance() {
         lcd.print(char(0xff));
         lcd.setCursor(1, 0);
         lcd.print("R. Setpoint");
-        drawSetValue_RunMode(Rset, String(char(244)) );
+        drawSetValue_RunMode(Rset, ohmUnit);
       }
 
       if((millis() - lastBlink) >= 400) {
         lastBlink = millis();
         rotaryEncode();
-        drawSetValue_setMode(Rset, String(char(244)) , 4);
+        drawSetValue_setMode(Rset, ohmUnit, 4);
       }
       if((millis() - lastBlink) >= 200) {//  select_digit
         rotaryEncode();
@@ -729,7 +752,7 @@ void menu4_VDM() {
       // if((millis() - lastBlink) >= 400) {
       //   lastBlink = millis();
       //   rotaryEncode();
-      //   drawSetValue_setMode(Rset, String(char(244)) , 4);
+      //   drawSetValue_setMode(Rset, ohmUnit, 4);
       // }
       // if((millis() - lastBlink) >= 200) {//  select_digit
       //   rotaryEncode();
@@ -1076,6 +1099,67 @@ void menu6_PID() {
   }
 }
 
+void menu7_capacityTest() {
+  static uint8_t lastScreenMode = 255;
+  if (lastScreenMode != mode) {
+    lastScreenMode = mode;
+    lcd.clear();
+  }
+
+  char line[21];
+  if (mode == 2) {
+    writeCapacityRow(0, "\xff" "Battery Test Setup");
+    snprintf(line, sizeof(line), "%cCurrent: %5.1fA",
+             capacityEditField == 0 ? static_cast<char>(0xff) : ' ', capacityCurrentA);
+    writeCapacityRow(1, line);
+    snprintf(line, sizeof(line), "%cCutoff:  %5.1fV",
+             capacityEditField == 1 ? static_cast<char>(0xff) : ' ', capacityCutoffV);
+    writeCapacityRow(2, line);
+    writeCapacityRow(3, "Dial +/-  R:Field");
+    return;
+  }
+
+  writeCapacityRow(0, "\xff" "Battery Capacity");
+  snprintf(line, sizeof(line), "I %5.1fA C %5.1fV", capacityCurrentA, capacityCutoffV);
+  writeCapacityRow(1, line);
+
+  switch (capacityTest.state()) {
+    case ElectronicLoadCapacityTest::RUNNING: {
+      const uint32_t elapsed = capacityTest.elapsedMs(millis()) / 1000;
+      snprintf(line, sizeof(line), "RUN %02lu:%02lu %5.1fmAh",
+               static_cast<unsigned long>(elapsed / 60),
+               static_cast<unsigned long>(elapsed % 60),
+               capacityTest.milliampHours());
+      writeCapacityRow(2, line);
+      writeCapacityRow(3, "R:Stop  Y:Back");
+      break;
+    }
+    case ElectronicLoadCapacityTest::COMPLETE:
+      snprintf(line, sizeof(line), "DONE %7.1fmAh", capacityTest.milliampHours());
+      writeCapacityRow(2, line);
+      snprintf(line, sizeof(line), "Wh: %6.2f  R:Reset", capacityTest.wattHours());
+      writeCapacityRow(3, line);
+      break;
+    case ElectronicLoadCapacityTest::STOPPED:
+      snprintf(line, sizeof(line), "STOP %7.1fmAh", capacityTest.milliampHours());
+      writeCapacityRow(2, line);
+      snprintf(line, sizeof(line), "Wh: %6.2f  R:Reset", capacityTest.wattHours());
+      writeCapacityRow(3, line);
+      break;
+    case ElectronicLoadCapacityTest::FAULT:
+      writeCapacityRow(2, "FAULT: LOAD OFF");
+      writeCapacityRow(3, "R:Reset  Y:Back");
+      break;
+    case ElectronicLoadCapacityTest::IDLE:
+    default:
+      if (capacityCutoffV <= 0.1) writeCapacityRow(2, "SET CUTOFF FIRST");
+      else if (!capacityStartReady) writeCapacityRow(2, "CHECK INPUT/TEMP");
+      else writeCapacityRow(2, "READY");
+      writeCapacityRow(3, "R:Start  Y:Edit");
+      break;
+  }
+}
+
 void runMenu() {
   if(mode == 0) {
     if(previous_mode != mode) {
@@ -1121,10 +1205,19 @@ void runMenu() {
         lcd.clear();
         onLoad = 0;
       }
-      menu4_VDM();
+      menu7_capacityTest();
     }
 
     else if(menu == 5) {
+      if(previous_menu != menu || previous_mode == 0) {
+        previous_menu = menu;
+        lcd.clear();
+        onLoad = 0;
+      }
+      menu4_VDM();
+    }
+
+    else if(menu == 6) {
       if(previous_menu != menu || previous_mode == 0) {
         previous_menu = menu;
         lcd.clear();
@@ -1133,7 +1226,7 @@ void runMenu() {
       menu5_setting();
     }
 
-    else if(menu == 6) {
+    else if(menu == 7) {
       if(previous_menu != menu || previous_mode == 0) {
         previous_menu = menu;
         lcd.clear();

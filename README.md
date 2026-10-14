@@ -1,27 +1,38 @@
-# DC Electronic Loads Class Project
+# ESP32 Electronic Load
 
-> A DC electronic load is a test instrument that simulates an electronic load to test the performance of a power source.
-
-This project is **ESP32-Base** (I use esp32 because the processor's clock is fast than ATMega328 on Arduino Family)
-ESP32 generating a PWM signal to controls the Gate-Source Voltage of MOSFET to drawn current from a power source, Measurement the currrent and feedback to control loop.
-
-<img height="500" alt="Picture1" src="https://github.com/Natchpai/Electronic_Load/blob/main/IMG_8593.JPG" /> 
+Firmware and KiCad design files for a programmable DC electronic load controlled by an ESP32. The firmware measures voltage and current through an external ADC, drives the load through PWM, and provides a local LCD and rotary-encoder interface.
 
 ## Features
-- Constant Current: Max 30A. *(I've only tested at 20A@12V. It works)*
-- Constant Power
-- Constant Resistance
-- Digital Voltmeter(Add-on)
 
-## 🛠️ How It Works
-1. Sensing: A shunt resistor I use 0.1 Ohm. Measurement the current by read the voltage across this resister use Op-Amp (OP07)
-2. Conversion: The Analog signal from Op-Amp is fed into an External ADC. This chip converts the voltage into a high-resolution digital value.
-3. Control: ESP32 reads this digital value from the ADC. Compares this current to set-point and Find the difference between them. It called error.
-   A PI controller algorithm running on the ESP32 calculates the exact adjustment needed to eliminate this error.
-4. Result: The PI controller's output is a new PWN duty cycle. send to 2nd-order Low pass filter to give the dc level to Gate of MOSFET.
+- Constant-current, constant-power, and constant-resistance modes
+- Digital voltmeter and PID tuning menus
+- Non-blocking ADC sampling and cached LCD updates
+- Battery-capacity test mode with voltage cutoff, runtime limit, and mAh/Wh totals
+- Voltage/current CSV telemetry for [Serial Oscilloscope](https://github.com/xioTechnologies/Serial-Oscilloscope)
 
-## 🛠️ Schematics
-<img height="700" alt="sch1" src="https://github.com/Natchpai/Electronic_Load/blob/main/Electronic_Load_sch_color_page-0001.jpg" />
-<img height="700" alt="sch2" src="https://github.com/Natchpai/Electronic_Load/blob/main/Electronic_Load_sch_color_page-0002.jpg" />
+## Repository Layout
 
-<img height="400" alt="Picture2" src="https://github.com/Natchpai/Electronic_Load/blob/main/IMG_8594-2.JPG" /><img height="300" alt="sch2" src="https://github.com/Natchpai/Electronic_Load/blob/main/PICTURE/DISPLAY%20LABEL%20-%20Const%20I.png" />
+| Path | Contents |
+|---|---|
+| `Electronic_load_esp32/` | Editable KiCad project, schematic, and PCB |
+| `electronic_load_codeESP32_PID/` | ESP32 firmware sketch, display/UI/sensor modules, and bundled libraries |
+| `CHANGELOG.md` | Confirmed project changes |
+| `AGENTS.md` | Contributor guidance |
+
+## Build Firmware
+
+Install Arduino CLI and the ESP32 Arduino platform, then run this command from the repository root:
+
+```powershell
+arduino-cli compile --fqbn esp32:esp32:esp32 --libraries .\electronic_load_codeESP32_PID\Inc .\electronic_load_codeESP32_PID
+```
+
+The target used for the current build is `esp32:esp32:esp32`. Project libraries are kept under `electronic_load_codeESP32_PID/Inc`.
+
+## Serial Oscilloscope
+
+The firmware emits one numeric CSV row every 50 ms at 115200 baud. Channel 1 is the selected voltage input in volts; channel 2 is current in amps. Select the ESP32's COM port in Serial Oscilloscope and close Arduino Serial Monitor before connecting. See [serial setup details](electronic_load_codeESP32_PID/SERIAL_OSCILLOSCOPE.md).
+
+## Verification and Hardware Notes
+
+The committed firmware clean-compiled and was uploaded to an ESP32-D0WD-V3 on COM3; a USB-only capture after upload received 52 numeric CSV rows at 115200 baud. Default gains are Kp = 0, Ki = 40, and Kd = 0, so the default controller is integral-only. No external input source or load was connected, so ADC calibration, rated operating limits, thermal performance, and controller stability under load are **not verified**. Confirm sensor calibration and power-stage component ratings and cooling before applying power.

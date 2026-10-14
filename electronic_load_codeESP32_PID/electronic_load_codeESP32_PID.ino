@@ -7,6 +7,8 @@
 #include "BfButton.h"
 #include "PID_v1.h"
 #include "ElectronicLoadDisplay.h"
+#include "ElectronicLoadSensors.h"
+#include "ElectronicLoadCapacityTest.h"
 // ADC INPUT
 // Move to 16Bits ADC I2C bus at: 0x48
 
@@ -46,6 +48,11 @@ float To = 298;
 float R25 = 10000;
 int8_t adj_temp = 0;
 float CurrentTemp;
+bool temperatureValid = false;
+uint32_t temperatureUpdatedAt = 0;
+bool currentSampleFresh = false;
+bool voltageSampleFresh = false;
+uint32_t lastSerialTelemetry = 0;
 int FanTrig_TempUpper = 45;
 int FanTrig_TempLower = 35;
 bool FanTrig = false;
@@ -93,8 +100,9 @@ uint8_t previous_mode = 255;
 uint8_t digit_1 = 1;
 uint8_t digit_2 = 2;
 uint8_t digit_3 = 3;
-int menuItemMax = 6;
+int menuItemMax = 7;
 int menuItemmin = 1;
+int settingItemMax = 6;
 
 
 //Define Variables we'll be connecting to
@@ -102,17 +110,18 @@ double Setpoint, Input, Output;
 
 //Define the aggressive and conservative Tuning Parameters
 // Don't touch Kd, it will be osscilate
-double consKp=0.0, consKi=400, consKd=0.0;
+double consKp=0.0, consKi=40.0, consKd=0.0;
 
 double gainMax = 800.00;
 double gainmin = 0.00;
 
 PID calPID(&Input, &Output, &Setpoint, consKp, consKi, consKd, DIRECT);
 
-String menuList[6] = {
+const char *menuList[7] = {
   "Const Current     ",
   "Const Power       ",
   "Const Resistance  ",
+  "Battery Capacity  ",
   "Digital Voltmeter ",
   "Utility           ",
   "PID Tuner         ",
@@ -125,7 +134,7 @@ int cursorMax = 2;
 int cursormin = 1;
 
 
-String settingList[6]= {
+const char *settingList[6]= {
   "Current Max       ",
   "Volt sense        ",
   "Fan Trig          ",
@@ -134,18 +143,18 @@ String settingList[6]= {
   "                  ",
 };
 
-String onOffList[2] = {
+const char *onOffList[2] = {
   "ON                ",
   "OFF               "
 };
 
-String FanList[2] = {
+const char *FanList[2] = {
   "Auto              ",
   "Manual            "
 };
 
 
-String PIDList[3]= {
+const char *PIDList[3]= {
   "Kp : ",
   "Ki :",
   "Kd : "
@@ -167,6 +176,12 @@ float dutyFactor = 0;
 
 // Analog to Digital Converter
 ADS1115 ADS(0x48);
+ElectronicLoadSensors sensorSampler(ADS);
+ElectronicLoadCapacityTest capacityTest;
+double capacityCurrentA = 1.00;
+double capacityCutoffV = 0.00;
+uint8_t capacityEditField = 0;
+bool capacityStartReady = false;
 int16_t I_ADC ;
 int16_t V0_ADC ;
 int16_t V1_ADC ;
@@ -201,9 +216,28 @@ BfButton redButton(BfButton::STANDALONE_DIGITAL, red_button_pin, true, LOW);
 BfButton yellowButton(BfButton::STANDALONE_DIGITAL, yellow_button_pin, true, LOW); 
 BfButton rotaryButton(BfButton::STANDALONE_DIGITAL, rotary_button_pin, false, LOW); 
 
+void tryStartCapacityTest();
+void serviceCapacityTest(uint32_t now, bool newCurrentSample, bool newVoltageSample);
+bool sensorsReady(uint32_t now);
+void serviceSensorSampler(uint32_t now);
+
 void pressRed (BfButton *redButton, BfButton::press_pattern_t pattern) {
   switch (pattern) {
     case BfButton::SINGLE_PRESS:
+      if(menu == 4 && mode == 1) {
+        if(capacityTest.running()) {
+          capacityTest.stop(millis());
+          onLoad = false;
+        } else if(capacityTest.state() == ElectronicLoadCapacityTest::COMPLETE ||
+                  capacityTest.state() == ElectronicLoadCapacityTest::STOPPED ||
+                  capacityTest.state() == ElectronicLoadCapacityTest::FAULT) {
+          capacityTest.reset(millis());
+          onLoad = false;
+        } else {
+          tryStartCapacityTest();
+        }
+        break;
+      }
       if(mode == 1) {
         onLoad = !onLoad;
       }
@@ -211,7 +245,7 @@ void pressRed (BfButton *redButton, BfButton::press_pattern_t pattern) {
     case BfButton::DOUBLE_PRESS:
       break;
     case BfButton::LONG_PRESS:
-      if(mode == 1) {
+      if(mode == 1 && menu != 4) {
         onLoad = !onLoad;
         mode = 2;
       }
@@ -223,6 +257,10 @@ void pressYellow (BfButton *yellowButton, BfButton::press_pattern_t pattern) {
   switch (pattern) {
     case BfButton::SINGLE_PRESS:
     // Back to previous
+      if(menu == 4 && capacityTest.running()) {
+        capacityTest.stop(millis());
+        onLoad = false;
+      }
       if(mode != 0) mode = mode - 1;
       if(mode == 0) lcd.clear();
       
@@ -232,9 +270,17 @@ void pressYellow (BfButton *yellowButton, BfButton::press_pattern_t pattern) {
       break;
     case BfButton::LONG_PRESS:
       if(mode == 0) {
+        if(menu == 4 && capacityTest.running()) {
+          capacityTest.stop(millis());
+          onLoad = false;
+        }
         mode = 1;
       }
       else if(mode == 1) {
+        if(menu == 4 && capacityTest.running()) {
+          capacityTest.stop(millis());
+          onLoad = false;
+        }
         mode = 2;
       } 
       break;
@@ -272,6 +318,9 @@ void pressRotary (BfButton *rotaryButton, BfButton::press_pattern_t pattern) {
           } else {
             select_digit = 0;
           }
+          break;
+        case 4:
+          capacityEditField = (capacityEditField + 1) % 2;
           break;
         }
       }
@@ -408,7 +457,7 @@ void count(bool state = true) { // state is true : countup
     else if(menu == 2) count_trig_float(&Pset, &select_digit, &PMax, &Pmin, state);
     else if(menu == 3) count_trig_float(&Rset, &select_digit, &RMax, &Rmin, state);
 
-    else if(menu == 5) {
+    else if(menu == 6) {
       switch(menu_setting) {
         case 1:
           count_trig_float(&Iin_maximum, &select_digit, &IMax, &Imin, state);
@@ -432,18 +481,30 @@ void count(bool state = true) { // state is true : countup
       }
     }
 
-    else if(menu == 6) {
+    else if(menu == 7) {
       if(menu_pid == 1) count_trig_float(&consKp, &digit_2, &gainMax, &gainmin, state);
       else if(menu_pid == 2) count_trig_float(&consKi, &digit_3, &gainMax, &gainmin, state);
       else if(menu_pid == 3) count_trig_float(&consKd, &digit_2, &gainMax, &gainmin, state);
       
     }
 
+    else if(menu == 4 && !capacityTest.running()) {
+      if(capacityEditField == 0) {
+        capacityCurrentA += state ? 0.1 : -0.1;
+        if(capacityCurrentA < 0.1) capacityCurrentA = 0.1;
+        if(capacityCurrentA > Iin_maximum) capacityCurrentA = Iin_maximum;
+      } else {
+        capacityCutoffV += state ? 0.1 : -0.1;
+        if(capacityCutoffV < 0.0) capacityCutoffV = 0.0;
+        if(capacityCutoffV > 999.9) capacityCutoffV = 999.9;
+      }
+    }
+
   } else 
 
   if(mode == 1) {
-    if(menu == 5) count_trig_int(&menu_setting, &digit_1, &menuItemMax, &menuItemmin, !state);
-    else if(menu == 6) count_trig_int(&menu_pid, &digit_1, &cursorPIDMax, &cursormin, !state);
+    if(menu == 6) count_trig_int(&menu_setting, &digit_1, &settingItemMax, &menuItemmin, !state);
+    else if(menu == 7) count_trig_int(&menu_pid, &digit_1, &cursorPIDMax, &cursormin, !state);
   }
 }
 
@@ -468,67 +529,125 @@ void rotaryEncode() {
 ////////////////////////////////////////// ROTARY ENCODER ///////////////////////////////////////
 
 void readTemp() {
-  float v_ntc = (analogRead(temp_sense_pin) * 3.3) / 4095;
-  float R_ntc = ((3.3* 11000) / v_ntc) - 11000;
-  CurrentTemp = ( (beta) / ( log(R_ntc/R25) + (beta/To)) ) - 273 + 4 + adj_temp;
+  const int raw = analogRead(temp_sense_pin);
+  if(raw <= 0 || raw >= 4095) {
+    temperatureValid = false;
+    return;
+  }
+  const float v_ntc = (raw * 3.3f) / 4095.0f;
+  const float R_ntc = ((3.3f * 11000.0f) / v_ntc) - 11000.0f;
+  if(!isfinite(R_ntc) || R_ntc <= 0.0f) {
+    temperatureValid = false;
+    return;
+  }
+  const float measuredTemp = (beta / (log(R_ntc / R25) + (beta / To))) - 273.0f + 4.0f + adj_temp;
+  if(!isfinite(measuredTemp) || measuredTemp < -40.0f || measuredTemp > 200.0f) {
+    temperatureValid = false;
+    return;
+  }
+  CurrentTemp = measuredTemp;
+  temperatureUpdatedAt = millis();
+  temperatureValid = true;
+  if(CurrentTemp >= Temp_Max) {
+    onLoad = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
+  }
 }
 
 
 void readVoltageAll() {
-  V0_ADC = ADS.readADC(1);  
-  V1_ADC = ADS.readADC(2); 
-  if (ADS.getError() == ADS1X15_OK)
-  { 
-    V_sense_1st = abs(V0_ADC * 0.001250);
-    V_sense_2nd = abs(V1_ADC * 0.001250);
+  // Values are maintained by the non-blocking sensor scheduler.
+}
+
+bool sensorsReady(uint32_t now) {
+  const uint8_t voltageIndex = V_sense_number ? 1 : 0;
+  return sensorSampler.healthy() && sensorSampler.currentValid() &&
+         sensorSampler.voltageValid(voltageIndex) &&
+         now - sensorSampler.currentTimestamp() <= SENSOR_STALE_TIMEOUT_MS &&
+         now - sensorSampler.voltageTimestamp(voltageIndex) <= SENSOR_STALE_TIMEOUT_MS &&
+         temperatureValid && now - temperatureUpdatedAt <= TEMPERATURE_STALE_TIMEOUT_MS;
+}
+
+void serviceSensorSampler(uint32_t now) {
+  currentSampleFresh = false;
+  voltageSampleFresh = false;
+  ElectronicLoadSensors::Sample sample;
+  if(!sensorSampler.service(now, sample)) return;
+  if(sample.channel == 0) {
+    I_ADC = sample.raw;
+    I_sense = fabs((double)I_ADC * 0.001250);
+    currentSampleFresh = true;
+  } else if(sample.channel == 1) {
+    V0_ADC = sample.raw;
+    V_sense_1st = fabs((double)V0_ADC * 0.001250);
+    voltageSampleFresh = V_sense_number == 0;
+  } else {
+    V1_ADC = sample.raw;
+    V_sense_2nd = fabs((double)V1_ADC * 0.001250);
+    voltageSampleFresh = V_sense_number == 1;
+  }
+
+  V_sense_select = V_sense_number ? V_sense_2nd : V_sense_1st;
+  PowerOut = I_sense * V_sense_select;
+  Resistance = I_sense > 0.0001 ? V_sense_select / I_sense : 1000000.0;
+
+  if(V_sense_select < VIN_MIN) {
+    Iset_forCal = 0.0;
+    onLoad = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
+  } else if(menu == 1) {
+    Iset_forCal = Iset;
+  } else if(menu == 2) {
+    Iset_forCal = Pset / V_sense_select;
+  } else if(menu == 3 && Rset > 0.01) {
+    Iset_forCal = V_sense_select / Rset;
+  } else if(menu == 4) {
+    Iset_forCal = capacityCurrentA;
+  }
+  if(Iset_forCal > Iin_maximum) Iset_forCal = Iin_maximum;
+}
+
+void tryStartCapacityTest() {
+  const uint32_t now = millis();
+  capacityStartReady = sensorsReady(now) && V_sense_select >= VIN_MIN &&
+                       capacityCutoffV > 0.1 && V_sense_select > capacityCutoffV;
+  if(!capacityStartReady) return;
+  if(capacityTest.start(now, capacityCurrentA, capacityCutoffV, Iin_maximum,
+                        V_sense_select, I_sense, CurrentTemp, sensorsReady(now),
+                        temperatureValid, Temp_Max)) {
+    Iset_forCal = capacityCurrentA;
+    onLoad = true;
   }
 }
 
-void readSensor() {
-  ADS.setGain(1); // Verf = 4.096 > Factor = 125uV / Bit;
-
-  I_ADC = ADS.readADC(0);  
-  V0_ADC = ADS.readADC(1);  
-  V1_ADC = ADS.readADC(2);  
-
-  if (ADS.getError() == ADS1X15_OK)
-  { 
-
-    I_sense = abs(I_ADC * 0.001250);
-    if(V_sense_number == 0) {
-      V_sense_select = abs(V0_ADC * 0.001250);
-    }
-    else {
-      V_sense_select = abs(V1_ADC * 0.001250);
-    }
+void serviceCapacityTest(uint32_t now, bool newCurrentSample, bool newVoltageSample) {
+  capacityStartReady = sensorsReady(now) && V_sense_select >= VIN_MIN &&
+                       capacityCutoffV > 0.1 && V_sense_select > capacityCutoffV;
+  capacityTest.update(now, newCurrentSample, newVoltageSample, V_sense_select,
+                      I_sense, CurrentTemp, sensorsReady(now), temperatureValid,
+                      Temp_Max, (uint32_t)timeMax * 60000UL);
+  if(!capacityTest.running()) {
+    onLoad = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
   }
+}
 
-  // Power calculate
-  PowerOut = I_sense * V_sense_select;
-
-  // Resistance calculate
-  if(I_sense != 0.0001) {
-    Resistance = V_sense_select / I_sense;
-  } else { Resistance = 1000000.0;}
-  
-
-  if(menu == 1 && V_sense_select >= VIN_MIN) {
-    Iset_forCal  = Iset;
-  }
-  // if activate = 0 : PWM duty = 0
-  else if(menu == 2 && V_sense_select >= VIN_MIN) {// Protection
-    Iset_forCal  = Pset / V_sense_select;
-  }
-  else if(menu == 3 && Rset > 0.01) {// devide by zero
-    Iset_forCal  = V_sense_select / Rset;
-  }
-  
-  // Protection
-  // if(Iset_forCal  > Iin_maximum) Iset_forCal = 1.0;
-  if(V_sense_select < VIN_MIN) {
-    Iset_forCal = 0; onLoad = 0;
-  }
-
+void sendSerialTelemetry(uint32_t now) {
+  if(now - lastSerialTelemetry < SERIAL_TELEMETRY_INTERVAL_MS) return;
+  lastSerialTelemetry = now;
+  // Serial Oscilloscope maps numeric CSV fields in order: CH1=voltage, CH2=current.
+  Serial.print(V_sense_select, 3);
+  Serial.write(',');
+  Serial.println(I_sense, 3);
 }
 
 
@@ -555,40 +674,34 @@ void readInput() {
 }
 
 void setDuty_PID() {
+  static bool wasEnabled = false;
+  static double lastKp = NAN, lastKi = NAN, lastKd = NAN;
+  if(!sensorsReady(millis()) || !onLoad || Iset_forCal <= 0.0) {
+    onLoad = false;
+    wasEnabled = false;
+    dutyCycle = 0;
+    Output = 0.0;
+    ledcWrite(PWM_pinOut, 0);
+    digitalWrite(gateCtrl_pinOut, LOW);
+    return;
+  }
   Setpoint = Iset_forCal;
   Input = I_sense;
-
-  if(onLoad == 1) {
-    // if((millis() - onLoad_time >= 1) && loadFlag == 1) {
-    //   onLoad_time = millis();
-    //   dutyCycle = dutyCycle + 200;
-    //   ledcWrite(PWM_pinOut, dutyCycle);
-    //   // if duty >= persent of Setpoint, that be going set to PID controller
-    //   if(dutyCycle >= (dutyFactor * Iset_forCal) * 0.1) {
-    //     loadFlag = 0;
-    //   }
-    // }
-    // if(loadFlag == 0) {
-      calPID.SetTunings(consKp, consKi, consKd);
-      calPID.Compute();
-      dutyCycle = dutyFactor * Output;
-    // }
-
-  } 
-  else {
-    loadFlag = 1;
-    onLoad_time = 0;
-    Setpoint = 0;
-    Input = dutyCycle * dutyFactor;
+  if(consKp != lastKp || consKi != lastKi || consKd != lastKd) {
     calPID.SetTunings(consKp, consKi, consKd);
-    calPID.Compute();
-    dutyCycle = dutyFactor * Output;
+    lastKp = consKp; lastKi = consKi; lastKd = consKd;
   }
-
-  ledcWrite(PWM_pinOut, dutyCycle);
-
-  Serial.print("I:");
-  Serial.println(I_sense);
+  if(!wasEnabled) {
+    Output = 0.0;
+    calPID.SetMode(MANUAL);
+    calPID.SetMode(AUTOMATIC);
+    wasEnabled = true;
+  }
+  if(calPID.Compute()) {
+    dutyCycle = (int)(dutyFactor * Output);
+    ledcWrite(PWM_pinOut, dutyCycle);
+  }
+  digitalWrite(gateCtrl_pinOut, HIGH);
 }
 
 uint32_t updateFan_time;
@@ -596,16 +709,13 @@ void updateFanTrig(int time) {
 
   if((millis() - updateFan_time >= time) && AutoFanMode == true) {
     updateFan_time = millis();
-    readTemp();
-    if(CurrentTemp >= FanTrig_TempUpper) FanTrig = true;
-    else if(CurrentTemp <= FanTrig_TempLower) FanTrig = false;
-    
-    if(CurrentTemp >= Temp_Max) onLoad = false;
-    digitalWrite(fanCtrl_pinOut, FanTrig);
+    if(temperatureValid) {
+      if(CurrentTemp >= FanTrig_TempUpper) FanTrig = true;
+      else if(CurrentTemp <= FanTrig_TempLower) FanTrig = false;
+    }
   }
-
+  if(AutoFanMode) digitalWrite(fanCtrl_pinOut, FanTrig || !temperatureValid);
   if(AutoFanMode == false ) digitalWrite(fanCtrl_pinOut, onLoad);
-
 }
 
 void clock_count() {
@@ -628,9 +738,8 @@ void clock_count() {
 }
 
 void setup() {
-  Serial.begin(112500);
+  Serial.begin(115200);
   Wire.begin();
-  ADS.begin();
 
   lcd.init();
   lcd.backlight();
@@ -641,7 +750,7 @@ void setup() {
   lcd.createChar(4, subBar4);
   lcd.createChar(5, subBar5);
   printBegin();
-  analogReadResolution(4096);
+  analogReadResolution(12);
   // analogWriteResolution(buzzer_pin ,12);
   // analogWriteFrequency(buzzer_pin, 5000);
 
@@ -686,38 +795,37 @@ void setup() {
 
   //PID Tuner
   calPID.SetOutputLimits(Imin, Iin_maximum);
-  calPID.SetSampleTime(1);
+  calPID.SetSampleTime(PID_SAMPLE_INTERVAL_MS);
   calPID.SetMode(AUTOMATIC);
+  sensorSampler.begin(millis());
+  readTemp();
 
 }
 
 void loop() {
+  const uint32_t now = millis();
   readInput();
   runMenu();
-  rotaryEncode();
-  readSensor();
-  
-  // Set Duty cycle
-  
+  serviceSensorSampler(now);
+  if(now - lastUpdateTempSensor >= updateTemp_time) {
+    lastUpdateTempSensor = now;
+    readTemp();
+  }
+  if(capacityTest.running() && (menu != 4 || mode != 1)) {
+    capacityTest.stop(now);
+    onLoad = false;
+  }
+  if(menu == 4 && capacityTest.running()) Iset_forCal = capacityCurrentA;
+  if(menu == 4) serviceCapacityTest(now, currentSampleFresh, voltageSampleFresh);
   setDuty_PID();
 
-  // Serial.print("duty:");
-  // Serial.print(dutyCycle*0.00152);
-  // Serial.print(",");
-
-  
-
-
-  // update sensor every 0.5 secconds
   updateSensor(); 
   if(menu == 1 || menu == 2 || menu == 3) {
     updateRunMode();
   }
 
   updateFanTrig(3000);
-  
-  rotaryEncode();
-
-  clock_count();
+  if(menu != 4) clock_count();
+  sendSerialTelemetry(now);
   lcd.flush();
 }

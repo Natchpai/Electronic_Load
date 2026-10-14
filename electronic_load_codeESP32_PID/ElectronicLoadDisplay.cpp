@@ -1,6 +1,8 @@
 #include "ElectronicLoadDisplay.h"
 #include "LiquidCrystal_I2C.h"
 
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 namespace {
@@ -67,13 +69,36 @@ size_t ElectronicLoadDisplay::print(const char *value) {
   return length;
 }
 
-size_t ElectronicLoadDisplay::print(const String &value) {
-  return print(value.c_str());
+size_t ElectronicLoadDisplay::print(int value) {
+  char buffer[16];
+  const int length = snprintf(buffer, sizeof(buffer), "%d", value);
+  return length > 0 ? print(buffer) : 0;
+}
+
+size_t ElectronicLoadDisplay::print(unsigned int value) {
+  char buffer[16];
+  const int length = snprintf(buffer, sizeof(buffer), "%u", value);
+  return length > 0 ? print(buffer) : 0;
+}
+
+size_t ElectronicLoadDisplay::print(long value) {
+  char buffer[24];
+  const int length = snprintf(buffer, sizeof(buffer), "%ld", value);
+  return length > 0 ? print(buffer) : 0;
+}
+
+size_t ElectronicLoadDisplay::print(unsigned long value) {
+  char buffer[24];
+  const int length = snprintf(buffer, sizeof(buffer), "%lu", value);
+  return length > 0 ? print(buffer) : 0;
 }
 
 size_t ElectronicLoadDisplay::print(double value, int digits) {
-  String text(value, digits);
-  return print(text);
+  if (digits < 0) digits = 0;
+  if (digits > 9) digits = 9;
+  char buffer[40];
+  dtostrf(value, 0, static_cast<unsigned int>(digits), buffer);
+  return print(buffer);
 }
 
 void ElectronicLoadDisplay::flush() {
