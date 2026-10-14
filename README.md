@@ -37,7 +37,7 @@ The firmware sketch coordinates sensor sampling, control, menu input, display up
 ### Design Considerations
 
 - The serial stream contains numeric CSV records only: CH1 is selected voltage in volts and CH2 is current in amps.
-- Default PID gains are Kp = 0, Ki = 40, and Kd = 0; the default controller is integral-only.
+- Default PID gains are Kp = 0.2, Ki = 10, and Kd = 0.0. The PID editor range is 0–0.8 for Kp/Kd and 0–15 for Ki.
 - No external input source or load was connected during USB-only verification. Calibration and loaded control behavior remain unverified.
 
 ## Schematics

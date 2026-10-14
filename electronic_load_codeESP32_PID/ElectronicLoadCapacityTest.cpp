@@ -56,7 +56,7 @@ void ElectronicLoadCapacityTest::update(uint32_t now, bool freshCurrent,
   }
   if (!temperatureValid || !isfinite(temperature)) {
     state_ = FAULT;
-    reason_ = SENSOR_FAILURE;
+    reason_ = TEMPERATURE_SENSOR_FAILURE;
     stoppedAt_ = now;
     return;
   }

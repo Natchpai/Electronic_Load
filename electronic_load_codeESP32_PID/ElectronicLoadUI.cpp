@@ -10,7 +10,7 @@
 extern float CurrentTemp;
 extern int menu;
 extern uint8_t mode;
-extern uint32_t lastUpdateTempSensor;
+extern uint32_t lastDisplayTempSensor;
 extern uint32_t LastupdateSensor;
 extern double V_sense_select;
 extern double I_sense;
@@ -56,6 +56,7 @@ extern double capacityCurrentA;
 extern double capacityCutoffV;
 extern uint8_t capacityEditField;
 extern bool temperatureValid;
+extern int lastTempRaw;
 extern bool capacityStartReady;
 
 void readVoltageAll();
@@ -76,9 +77,46 @@ void writeCapacityRow(uint8_t row, const char *text) {
   lcd.setCursor(0, row);
   lcd.print(line);
 }
+
+void drawPidTunerValues() {
+  lcd.setCursor(1, 1);
+  lcd.print(PIDList[0]);
+  lcd.setCursor(7, 1);
+  lcd.print(consKp, 1);
+
+  lcd.setCursor(1, 2);
+  lcd.print(PIDList[1]);
+  if(consKi < 9.99) {
+    lcd.setCursor(5, 2);
+    lcd.print("  ");
+    lcd.setCursor(7, 2);
+    lcd.print(consKi, 1);
+  } else if(consKi < 99.99) {
+    lcd.setCursor(5, 2);
+    lcd.print(" ");
+    lcd.setCursor(6, 2);
+    lcd.print(consKi, 1);
+  } else {
+    lcd.setCursor(5, 2);
+    lcd.print(consKi, 1);
+  }
+
+  lcd.setCursor(1, 3);
+  lcd.print(PIDList[2]);
+  lcd.setCursor(7, 3);
+  lcd.print(consKd, 1);
+}
 }
 
 void updateTempSensor() {
+  if(!temperatureValid) {
+    char status[6];
+    snprintf(status, sizeof(status), "E%04d", lastTempRaw);
+    lcd.setCursor(15, 0);
+    lcd.print(status);
+    return;
+  }
+
   // Temperature is sampled by the main scheduler; this function only paints it.
   if((int)CurrentTemp <= 99) {
     lcd.setCursor(15, 0);
@@ -101,8 +139,8 @@ void updateTempSensor() {
 
 void updateSensor() {
   if( (menu == 1 ||  menu == 2 || menu == 3) && mode != 0 ) {
-    if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-      lastUpdateTempSensor = millis();
+    if(millis() - lastDisplayTempSensor >= updateTemp_time) {
+      lastDisplayTempSensor = millis();
       updateTempSensor();
     }
 
@@ -398,40 +436,16 @@ void menu0_MainMenu() {
   rotaryEncode();
   rotaryButton.read();
 
-  if(menu - frame == 3) {
-    frame++;
+  // Keep the selected item visible and redraw the whole cursor column. The
+  // encoder is sampled once per loop so the marker and labels use one index.
+  if(menu < frame) frame = menu;
+  if(menu > frame + 2) frame = menu - 2;
+  for(uint8_t row = 1; row <= 3; ++row) {
+    lcd.setCursor(0, row);
+    lcd.print(" ");
   }
-
-  else if(frame - menu == 1) {
-    frame--;
-  }
-
   lcd.setCursor(0, menu - frame + 1);
   lcd.write(0);
-
-  if (menu - frame == 0) {
-    lcd.setCursor(0, 2);
-    lcd.print(" ");
-    lcd.setCursor(0, 3);
-    lcd.print(" ");
-    rotaryEncode();
-
-  }
-  else if (menu - frame == 2) {
-    lcd.setCursor(0, 1);
-    lcd.print(" ");
-    lcd.setCursor(0, 2);
-    lcd.print(" ");
-    rotaryEncode();
-
-  }
-  else {
-    lcd.setCursor(0, 1);
-    lcd.print(" ");
-    lcd.setCursor(0, 3);
-    lcd.print(" ");
-    rotaryEncode();
-  }
 
   lcd.setCursor(1, 1);
   lcd.print(menuList[frame - 1]);
@@ -439,7 +453,6 @@ void menu0_MainMenu() {
   lcd.print(menuList[frame + 0]);
   lcd.setCursor(1, 3);
   lcd.print(menuList[frame + 1]);
-  rotaryEncode();
 }
 
 void menu1_constCurrent() {
@@ -450,7 +463,7 @@ void menu1_constCurrent() {
     case 1:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 0);
         lcd.print(char(0xff));
         lcd.setCursor(1, 0);
@@ -465,7 +478,7 @@ void menu1_constCurrent() {
       updateSensor();
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 3);
         lcd.print("Set");
         lcd.setCursor(0, 0);
@@ -518,7 +531,7 @@ void menu2_constPower() {
     case 1:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 0);
         lcd.print(char(0xff));
         lcd.setCursor(1, 0);
@@ -526,15 +539,15 @@ void menu2_constPower() {
         drawSetValue_RunMode(Pset, "W");
       }
 
-      if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-        lastUpdateTempSensor = millis();
+      if(millis() - lastDisplayTempSensor >= updateTemp_time) {
+        lastDisplayTempSensor = millis();
         updateTempSensor();
       }
       break;
     case 2:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 3);
         lcd.print("Set");
         lcd.setCursor(0, 0);
@@ -592,7 +605,7 @@ void menu3_constResistance() {
     case 1:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 0);
         lcd.print(char(0xff));
         lcd.setCursor(1, 0);
@@ -600,15 +613,15 @@ void menu3_constResistance() {
         drawSetValue_RunMode(Rset, ohmUnit);
       }
 
-      if(millis() - lastUpdateTempSensor >= updateTemp_time) {
-        lastUpdateTempSensor = millis();
+      if(millis() - lastDisplayTempSensor >= updateTemp_time) {
+        lastDisplayTempSensor = millis();
         updateTempSensor();
       }
       break;
     case 2:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 3);
         lcd.print("Set");
         lcd.setCursor(0, 0);
@@ -670,7 +683,7 @@ void menu4_VDM() {
     case 1:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 0);
         lcd.print(char(0xff));
         lcd.setCursor(1, 0);
@@ -744,7 +757,7 @@ void menu4_VDM() {
     case 2:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
         lcd.setCursor(0, 0);
         lcd.print("NOTHING");
       }
@@ -801,7 +814,7 @@ void menu5_setting() {
     case 1:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
 
       lcd.setCursor(0, 0);
       lcd.print(char(0xff));
@@ -858,7 +871,7 @@ void menu5_setting() {
     case 2:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
       }
       lcd.setCursor(0, 0);
       lcd.print(char(0xff));
@@ -987,7 +1000,7 @@ void menu6_PID() {
     case 1:
       if(previous_mode != mode) {
         previous_mode = mode;
-        lcd.clear();
+
 
         lcd.setCursor(0, 0);
         lcd.print(char(0xff));
@@ -1057,36 +1070,20 @@ void menu6_PID() {
       break;
 
     case 2:
-      if((millis() - lastBlink) >= 500) {
+      {
+      const bool enteringSetMode = previous_mode != mode;
+      if(enteringSetMode) {
+        previous_mode = mode;
+        lcd.setCursor(0, 0);
+        lcd.print(char(0xff));
+        lcd.setCursor(1, 0);
+        lcd.print("PID Tuner");
+      }
+
+      if(enteringSetMode || (millis() - lastBlink) >= 500) {
         lastBlink = millis();
         rotaryEncode();
-        lcd.setCursor(1, 1);
-        lcd.print(PIDList[frame_pid - 1]);
-        lcd.setCursor(7, 1);
-        lcd.print(consKp, 1);
-        lcd.setCursor(1, 2);
-        lcd.print(PIDList[frame_pid + 0]);
-
-        if(consKi < 9.99) {
-          lcd.setCursor(5, 2);
-          lcd.print("  ");
-          lcd.setCursor(7, 2);
-          lcd.print(consKi, 1);
-        }
-        else if(consKi < 99.99){
-          lcd.setCursor(5, 2);
-          lcd.print(" ");
-          lcd.setCursor(6, 2);
-          lcd.print(consKi, 1);
-        } else {
-          lcd.setCursor(5, 2);
-          lcd.print(consKi, 1);
-        }
-
-        lcd.setCursor(1, 3);
-        lcd.print(PIDList[frame_pid + 1]);
-        lcd.setCursor(7, 3);
-        lcd.print(consKd, 1);
+        drawPidTunerValues();
         rotaryButton.read();
       }
       if((millis() - lastBlink) >= 250) {
@@ -1096,16 +1093,11 @@ void menu6_PID() {
         lcd.print(char(0xff));
       }
       break;
+      }
   }
 }
 
 void menu7_capacityTest() {
-  static uint8_t lastScreenMode = 255;
-  if (lastScreenMode != mode) {
-    lastScreenMode = mode;
-    lcd.clear();
-  }
-
   char line[21];
   if (mode == 2) {
     writeCapacityRow(0, "\xff" "Battery Test Setup");
@@ -1115,7 +1107,7 @@ void menu7_capacityTest() {
     snprintf(line, sizeof(line), "%cCutoff:  %5.1fV",
              capacityEditField == 1 ? static_cast<char>(0xff) : ' ', capacityCutoffV);
     writeCapacityRow(2, line);
-    writeCapacityRow(3, "Dial +/-  R:Field");
+    writeCapacityRow(3, "Dial +/- Knob:Field");
     return;
   }
 
@@ -1131,7 +1123,7 @@ void menu7_capacityTest() {
                static_cast<unsigned long>(elapsed % 60),
                capacityTest.milliampHours());
       writeCapacityRow(2, line);
-      writeCapacityRow(3, "R:Stop  Y:Back");
+      writeCapacityRow(3, "Y:Back  R:Stop");
       break;
     }
     case ElectronicLoadCapacityTest::COMPLETE:
@@ -1147,15 +1139,29 @@ void menu7_capacityTest() {
       writeCapacityRow(3, line);
       break;
     case ElectronicLoadCapacityTest::FAULT:
-      writeCapacityRow(2, "FAULT: LOAD OFF");
-      writeCapacityRow(3, "R:Reset  Y:Back");
+      switch (capacityTest.reason()) {
+        case ElectronicLoadCapacityTest::OVER_TEMPERATURE:
+          writeCapacityRow(2, "FAULT: OVER TEMP");
+          break;
+        case ElectronicLoadCapacityTest::SENSOR_FAILURE:
+          writeCapacityRow(2, "FAULT: SENSOR DATA");
+          break;
+        case ElectronicLoadCapacityTest::TEMPERATURE_SENSOR_FAILURE:
+          snprintf(line, sizeof(line), "TEMP SENSOR RAW %4d", lastTempRaw);
+          writeCapacityRow(2, line);
+          break;
+        default:
+          writeCapacityRow(2, "FAULT: LOAD OFF");
+          break;
+      }
+      writeCapacityRow(3, "Y:Back  R:Reset");
       break;
     case ElectronicLoadCapacityTest::IDLE:
     default:
       if (capacityCutoffV <= 0.1) writeCapacityRow(2, "SET CUTOFF FIRST");
       else if (!capacityStartReady) writeCapacityRow(2, "CHECK INPUT/TEMP");
       else writeCapacityRow(2, "READY");
-      writeCapacityRow(3, "R:Start  Y:Edit");
+      writeCapacityRow(3, "Y:HoldEdit R:Start");
       break;
   }
 }
@@ -1172,66 +1178,56 @@ void runMenu() {
 
   else
   {
+    const bool menuChanged = previous_menu != menu;
+    const bool screenChanged = menuChanged || previous_mode != mode;
+    if(screenChanged) lcd.clear();
+    if(menuChanged) previous_mode = 0;
+    previous_menu = menu;
+
     if(menu == 1) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
+      if(menuChanged || previous_mode == 0) {
         onLoad = 0;
       }
       menu1_constCurrent();
     }
 
     else if(menu == 2) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
+      if(menuChanged || previous_mode == 0) {
         onLoad = 0;
       }
       menu2_constPower();
     }
 
     else if(menu == 3) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
+      if(menuChanged || previous_mode == 0) {
         onLoad = 0;
       }
       menu3_constResistance();
     }
 
     else if(menu == 4) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
+      if(menuChanged) {
         onLoad = 0;
       }
+      // Battery Capacity has no page-specific mode transition handler.
+      // Update the shared state here so the LCD is not cleared and the load
+      // is not disabled again on every loop while this page is active.
+      previous_mode = mode;
       menu7_capacityTest();
     }
 
     else if(menu == 5) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
+      if(menuChanged || previous_mode == 0) {
         onLoad = 0;
       }
       menu4_VDM();
     }
 
     else if(menu == 6) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        // load can on
-      }
       menu5_setting();
     }
 
     else if(menu == 7) {
-      if(previous_menu != menu || previous_mode == 0) {
-        previous_menu = menu;
-        lcd.clear();
-        // load can on
-      }
       menu6_PID();
     } else { }
   }
