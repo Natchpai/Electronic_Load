@@ -18,6 +18,7 @@ Notable changes to this project are documented here.
 - Placed Battery Capacity directly after Constant Resistance and aligned its screen with the existing menu selection style. Fixed-width incremental rows avoid clearing the LCD every loop.
 - Set the PID interval to 25 ms (40 Hz nominal) and reduced the default Ki from 400 to 40 for slower integral action; Kp and Kd remain zero.
 - Reduced the default PID Ki from 40 to 10 and set the automatic fan thresholds to 35 °C on and 30 °C off.
+- Set the default PID Kp to 0.2 and limited the PID editor ranges to 0–0.8 for Kp/Kd and 0–15 for Ki.
 - Require valid sensor readings, input voltage of at least 0.1 V, and a positive current setpoint before enabling the load.
 - Corrected ESP32 ADC resolution configuration to 12 bits and added thermistor input validation.
 - Removed stray library debug output so the serial telemetry stream contains only numeric CSV records.
