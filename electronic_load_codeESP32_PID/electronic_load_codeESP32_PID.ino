@@ -531,18 +531,15 @@ void rotaryEncode() {
 void readTemp() {
   const int raw = analogRead(temp_sense_pin);
   if(raw <= 0 || raw >= 4095) {
-    temperatureValid = false;
     return;
   }
   const float v_ntc = (raw * 3.3f) / 4095.0f;
   const float R_ntc = ((3.3f * 11000.0f) / v_ntc) - 11000.0f;
   if(!isfinite(R_ntc) || R_ntc <= 0.0f) {
-    temperatureValid = false;
     return;
   }
   const float measuredTemp = (beta / (log(R_ntc / R25) + (beta / To))) - 273.0f + 4.0f + adj_temp;
   if(!isfinite(measuredTemp) || measuredTemp < -40.0f || measuredTemp > 200.0f) {
-    temperatureValid = false;
     return;
   }
   CurrentTemp = measuredTemp;
@@ -810,6 +807,11 @@ void loop() {
   if(now - lastUpdateTempSensor >= updateTemp_time) {
     lastUpdateTempSensor = now;
     readTemp();
+  }
+  // Retain the last good reading through brief ADC glitches, then fail safe
+  // when no valid temperature has arrived within the configured stale window.
+  if(temperatureValid && now - temperatureUpdatedAt > TEMPERATURE_STALE_TIMEOUT_MS) {
+    temperatureValid = false;
   }
   if(capacityTest.running() && (menu != 4 || mode != 1)) {
     capacityTest.stop(now);
