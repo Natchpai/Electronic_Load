@@ -55,8 +55,8 @@ int lastTempRaw = 0;
 bool currentSampleFresh = false;
 bool voltageSampleFresh = false;
 uint32_t lastSerialTelemetry = 0;
-int FanTrig_TempUpper = 26;
-int FanTrig_TempLower = 25;
+int FanTrig_TempUpper = 35;
+int FanTrig_TempLower = 30;
 bool FanTrig = false;
 bool AutoFanMode = true;
 int Temp_Max = 90;
@@ -112,7 +112,7 @@ double Setpoint, Input, Output;
 
 //Define the aggressive and conservative Tuning Parameters
 // Don't touch Kd, it will be osscilate
-double consKp=0.0, consKi=40.0, consKd=0.0;
+double consKp=0.0, consKi=10.0, consKd=0.0;
 
 double gainMax = 800.00;
 double gainmin = 0.00;
@@ -158,7 +158,7 @@ const char *FanList[2] = {
 
 const char *PIDList[3]= {
   "Kp : ",
-  "Ki :",
+  "Ki : ",
   "Kd : "
 };
 
@@ -214,14 +214,27 @@ byte subBar4[] = {B00000, B00000, B11110, B11110, B11110, B11110, B11110, B11110
 byte subBar5[] = {B00000, B00000, B11111, B11111, B11111, B11111, B11111, B11111};
 
 // Button Fever
-BfButton redButton(BfButton::STANDALONE_DIGITAL, red_button_pin, true, LOW); 
-BfButton yellowButton(BfButton::STANDALONE_DIGITAL, yellow_button_pin, true, LOW); 
-BfButton rotaryButton(BfButton::STANDALONE_DIGITAL, rotary_button_pin, false, LOW); 
+BfButton redButton(BfButton::STANDALONE_DIGITAL, red_button_pin, true, LOW);
+BfButton yellowButton(BfButton::STANDALONE_DIGITAL, yellow_button_pin, true, LOW);
+BfButton rotaryButton(BfButton::STANDALONE_DIGITAL, rotary_button_pin, false, LOW);
 
 void tryStartCapacityTest();
 void serviceCapacityTest(uint32_t now, bool newCurrentSample, bool newVoltageSample);
 bool sensorsReady(uint32_t now);
 void serviceSensorSampler(uint32_t now);
+
+bool canEnableLoad() {
+  const uint32_t now = millis();
+  return sensorsReady(now) && V_sense_select >= VIN_MIN && Iset_forCal > 0.0;
+}
+
+void toggleLoadRequest() {
+  if(onLoad) {
+    onLoad = false;
+  } else if(canEnableLoad()) {
+    onLoad = true;
+  }
+}
 
 void pressRed (BfButton *redButton, BfButton::press_pattern_t pattern) {
   switch (pattern) {
@@ -241,14 +254,14 @@ void pressRed (BfButton *redButton, BfButton::press_pattern_t pattern) {
         break;
       }
       if(mode == 1) {
-        onLoad = !onLoad;
+        toggleLoadRequest();
       }
       break;
     case BfButton::DOUBLE_PRESS:
       break;
     case BfButton::LONG_PRESS:
       if(mode == 1 && menu != 4) {
-        onLoad = !onLoad;
+        toggleLoadRequest();
         mode = 2;
       }
       break;
@@ -264,11 +277,10 @@ void pressYellow (BfButton *yellowButton, BfButton::press_pattern_t pattern) {
         onLoad = false;
       }
       if(mode != 0) mode = mode - 1;
-      if(mode == 0) lcd.clear();
-      
+
       break;
     case BfButton::DOUBLE_PRESS:
-      
+
       break;
     case BfButton::LONG_PRESS:
       if(mode == 0) {
@@ -284,20 +296,20 @@ void pressYellow (BfButton *yellowButton, BfButton::press_pattern_t pattern) {
           onLoad = false;
         }
         mode = 2;
-      } 
+      }
       break;
   }
 }
 
 void pressRotary (BfButton *rotaryButton, BfButton::press_pattern_t pattern) {
   switch (pattern) {
-    case BfButton::SINGLE_PRESS: 
+    case BfButton::SINGLE_PRESS:
       if(mode == 0) {
         mode = 1;
       }
       else if(mode == 1) {
         mode = 2;
-      }  
+      }
       else if(mode == 2) {
         switch (menu) {
         case 1:
@@ -415,8 +427,8 @@ void count_trig_float(double* value, uint8_t* digit, double* Max, double* min, b
       case 7:
         if(((*value - 10000.0) < *min)) {}//{ *value = *min; }
         else {*value = *value - 10000.0;}
-        break;  
-      
+        break;
+
     }
   }
 }
@@ -452,8 +464,8 @@ void count(bool state = true) { // state is true : countup
   if(mode == 0) {
     // score main menu
     count_trig_int(&menu, &digit_1, &menuItemMax, &menuItemmin, !state);
-  } else 
-  
+  } else
+
   if(mode == 2) {
     if(menu == 1) count_trig_float(&Iset, &select_digit, &IMax, &Imin, state);
     else if(menu == 2) count_trig_float(&Pset, &select_digit, &PMax, &Pmin, state);
@@ -487,7 +499,7 @@ void count(bool state = true) { // state is true : countup
       if(menu_pid == 1) count_trig_float(&consKp, &digit_2, &gainMax, &gainmin, state);
       else if(menu_pid == 2) count_trig_float(&consKi, &digit_3, &gainMax, &gainmin, state);
       else if(menu_pid == 3) count_trig_float(&consKd, &digit_2, &gainMax, &gainmin, state);
-      
+
     }
 
     else if(menu == 4 && !capacityTest.running()) {
@@ -502,7 +514,7 @@ void count(bool state = true) { // state is true : countup
       }
     }
 
-  } else 
+  } else
 
   if(mode == 1) {
     if(menu == 6) count_trig_int(&menu_setting, &digit_1, &settingItemMax, &menuItemmin, !state);
@@ -516,13 +528,13 @@ void rotaryEncode() {
   if (encode_clk == 0 && encode_dt == 1 && rotaryIsNextTigger == 1) {
     rotaryIsNextTigger = 0;
     count(1);
-    digitalWrite(buzzer_pin, HIGH); 
-  } 
+    digitalWrite(buzzer_pin, HIGH);
+  }
   else if(encode_dt == 0 && encode_clk == 1 && rotaryIsNextTigger == 1) {
     rotaryIsNextTigger = 0;
     count(0);
-    digitalWrite(buzzer_pin, HIGH); 
-  } 
+    digitalWrite(buzzer_pin, HIGH);
+  }
   else if(encode_clk == 1 && encode_dt == 1 ) {
     rotaryIsNextTigger = 1;
     digitalWrite(buzzer_pin, LOW);
@@ -562,13 +574,21 @@ void readVoltageAll() {
   // Values are maintained by the non-blocking sensor scheduler.
 }
 
-bool sensorsReady(uint32_t now) {
+bool adcSensorsReady(uint32_t now) {
   const uint8_t voltageIndex = V_sense_number ? 1 : 0;
   return sensorSampler.healthy() && sensorSampler.currentValid() &&
          sensorSampler.voltageValid(voltageIndex) &&
          now - sensorSampler.currentTimestamp() <= SENSOR_STALE_TIMEOUT_MS &&
-         now - sensorSampler.voltageTimestamp(voltageIndex) <= SENSOR_STALE_TIMEOUT_MS &&
-         temperatureValid && now - temperatureUpdatedAt <= TEMPERATURE_STALE_TIMEOUT_MS;
+         now - sensorSampler.voltageTimestamp(voltageIndex) <= SENSOR_STALE_TIMEOUT_MS;
+}
+
+bool temperatureReady(uint32_t now) {
+  return temperatureValid &&
+         now - temperatureUpdatedAt <= TEMPERATURE_STALE_TIMEOUT_MS;
+}
+
+bool sensorsReady(uint32_t now) {
+  return adcSensorsReady(now) && temperatureReady(now);
 }
 
 void serviceSensorSampler(uint32_t now) {
@@ -630,7 +650,7 @@ void serviceCapacityTest(uint32_t now, bool newCurrentSample, bool newVoltageSam
   capacityStartReady = sensorsReady(now) && V_sense_select >= VIN_MIN &&
                        capacityCutoffV > 0.1 && V_sense_select > capacityCutoffV;
   capacityTest.update(now, newCurrentSample, newVoltageSample, V_sense_select,
-                      I_sense, CurrentTemp, sensorsReady(now), temperatureValid,
+                      I_sense, CurrentTemp, adcSensorsReady(now), temperatureReady(now),
                       Temp_Max, (uint32_t)timeMax * 60000UL);
   if(!capacityTest.running()) {
     onLoad = false;
@@ -823,10 +843,12 @@ void loop() {
     onLoad = false;
   }
   if(menu == 4 && capacityTest.running()) Iset_forCal = capacityCurrentA;
-  if(menu == 4) serviceCapacityTest(now, currentSampleFresh, voltageSampleFresh);
+  // Use a fresh timestamp here: readTemp() may have updated
+  // temperatureUpdatedAt after the loop's initial `now` was captured.
+  if(menu == 4) serviceCapacityTest(millis(), currentSampleFresh, voltageSampleFresh);
   setDuty_PID();
 
-  updateSensor(); 
+  updateSensor();
   if(menu == 1 || menu == 2 || menu == 3) {
     updateRunMode();
   }
