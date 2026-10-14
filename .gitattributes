@@ -1,2 +1,7 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Keep source archives focused on firmware by omitting large reference assets.
+PICTURE/** export-ignore
+logos/** export-ignore
+docs/** export-ignore
