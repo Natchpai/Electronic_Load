@@ -6,6 +6,7 @@ Notable changes to this project are documented here.
 
 ### Added
 
+- Added the MIT license.
 - Added non-blocking ADS1115 sampling with sample freshness and conversion-timeout checks.
 - Added a battery-capacity menu that integrates mAh and Wh and stops on the configured voltage cutoff, runtime limit, or sensor fault.
 - Added 20 Hz voltage/current CSV telemetry for Serial Oscilloscope, with voltage on channel 1 and current on channel 2.

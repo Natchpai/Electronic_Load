@@ -2,6 +2,13 @@
 
 Firmware and KiCad design files for a programmable DC electronic load controlled by an ESP32. The firmware measures voltage and current through an external ADC, drives the load through PWM, and provides a local LCD and rotary-encoder interface.
 
+## Hardware
+
+<p align="center">
+  <img src="PICTURE/IMG_8593.JPG" alt="Electronic load hardware" width="600">
+</p>
+
+
 ## Features
 
 - Constant-current, constant-power, and constant-resistance modes
@@ -19,6 +26,16 @@ Firmware and KiCad design files for a programmable DC electronic load controlled
 | `CHANGELOG.md` | Confirmed project changes |
 | `AGENTS.md` | Contributor guidance |
 
+## Schematics
+
+<p align="center">
+  <img src="PICTURE/Electronic_Load_sch_color_page-0001.jpg" alt="Electronic load schematic, page 1" width="600">
+</p>
+
+<p align="center">
+  <img src="PICTURE/Electronic_Load_sch_color_page-0002.jpg" alt="Electronic load schematic, page 2" width="600">
+</p>
+
 ## Build Firmware
 
 Install Arduino CLI and the ESP32 Arduino platform, then run this command from the repository root:
@@ -28,6 +45,7 @@ arduino-cli compile --fqbn esp32:esp32:esp32 --libraries .\electronic_load_codeE
 ```
 
 The target used for the current build is `esp32:esp32:esp32`. Project libraries are kept under `electronic_load_codeESP32_PID/Inc`.
+
 
 ## Serial Oscilloscope
 
